@@ -1,0 +1,49 @@
+{% extends 'reels_base.html' %}
+{% block title %}Temas y fuentes · Al día{% endblock %}
+{% block body_class %}manage-page{% endblock %}
+{% block content %}
+<div class="manage-wrap">
+ <a class="back-link" href="/reels">Volver a las noticias</a>
+ <p class="text-label accent">TU PROPIA AGENDA</p><h1>Menos buscar.<br>Más estar al día.</h1>
+ <p class="manage-intro">Sigue proveedores, productos y temas. Combina publicaciones oficiales con búsquedas en medios y mantén tus fuentes desde aquí.</p>
+ {% if error %}<p class="feedback error" role="alert">{{ error }}</p>{% endif %}
+ {% if done %}<p class="feedback success" role="status">{{ done }}</p>{% endif %}
+ <section class="manage-panel" id="auto-topics"><h2>Temas automáticos</h2>
+ <p class="field-help">Las reglas buscan palabras o frases completas en el título, extracto y dirección de cada noticia. Una noticia puede tener varios temas, aunque venga de un medio general. Se aplican también al historial, sin IA ni coste. Se ignoran mayúsculas y tildes. Usa comas para separar alternativas; las exclusiones impiden asignar ese tema.</p>
+ {% for t in topic_rules %}<details class="topic-rule {{ 'paused' if not t.enabled }}"><summary>{{ t.name }} <span>{{ 'Activo' if t.enabled else 'Pausado' }}</span></summary>
+  <form action="/reels/manage/topic/{{ t.id }}" method="post">
+   <label>Nombre del tema<input name="name" value="{{ t.name }}" maxlength="80" required></label>
+   <label>Alguna de estas palabras o frases<textarea name="include" rows="3" maxlength="2500" required>{{ t.include }}</textarea></label>
+   <label>Pero ninguna de estas<textarea name="exclude" rows="2" maxlength="2500">{{ t.exclude }}</textarea></label>
+   <div class="empty-actions"><button class="primary" name="action" value="save">Guardar regla</button><button class="secondary" name="action" value="toggle" formnovalidate>{{ 'Pausar' if t.enabled else 'Activar' }}</button><button class="subtle danger" name="action" value="remove" formnovalidate data-confirm="¿Quitar este tema? Las noticias se conservan.">Quitar tema</button></div>
+  </form></details>{% endfor %}
+ <details class="topic-rule"><summary>+ Crear un tema</summary><form action="/reels/manage/topic" method="post"><label>Nombre<input name="name" maxlength="80" placeholder="Ej.: Mi proveedor" required></label><label>Palabras o frases<textarea name="include" rows="3" maxlength="2500" placeholder="producto, empresa, nombre del proveedor" required></textarea></label><label>Excluir<textarea name="exclude" rows="2" maxlength="2500" placeholder="Términos que no corresponden"></textarea></label><button class="primary">Crear tema</button></form></details>
+ </section>
+ <section class="manage-panel" id="saved-views"><h2>Vistas guardadas</h2><p class="field-help">Desde Menú → lupa, combina filtros y usa «Guardar esta combinación». Una vista filtra la biblioteca; no crea nuevas búsquedas en Internet.</p>
+ {% for v in saved_views %}<div class="source-row"><a href="{{ view_url(v) }}">{{ v.name }} ↗</a><form method="post" action="/reels/views/{{ v.id }}/remove"><button class="subtle danger">Quitar vista</button></form></div>{% else %}<p class="field-help">Todavía no has guardado vistas.</p>{% endfor %}</section>
+ <section class="manage-panel"><h2>Añadir un seguimiento</h2>
+ <form method="post" action="/reels/manage/source" class="source-form">
+  <label>Nombre<input name="name" placeholder="Ej.: Novedades de mi proveedor" maxlength="100" required></label>
+  <div class="form-row"><label>Cómo seguirlo<select name="kind" id="source-kind"><option value="search">Búsqueda de noticias</option><option value="rss">Fuente RSS o Atom</option></select></label><label>Sección<select name="category">{% for s in cfg.all_sections %}<option value="{{ s.key }}">{{ s.label }}</option>{% endfor %}</select></label></div>
+  <label><span data-value-label>Búsqueda</span><input name="value" id="source-value" placeholder='Ej.: "nombre del proveedor" nuevos productos' maxlength="2000" required></label>
+  <p class="field-help" data-source-help>Se consulta Google News en español. Puedes usar comillas y site:dominio.com para afinar la búsqueda. Cada búsqueda es una fuente independiente.</p>
+  <button class="primary" type="submit">Añadir seguimiento</button>
+ </form></section>
+ <section class="manage-panel"><div class="panel-heading"><h2>Tus fuentes y búsquedas</h2><span>{{ cfg.feeds|length }}</span></div>
+ <p class="field-help">Pausar detiene la recolección. Quitar elimina el seguimiento; sus noticias recopiladas y su estado de lectura permanecen en tu biblioteca.</p>
+ <div class="source-list">{% for f in cfg.feeds %}{% set health = status.sources|selectattr('id', 'equalto', f.id)|first %}
+ <div class="source-row {{ 'paused' if not f.enabled }}"><div class="source-info"><strong>{{ f.name or f.id }}</strong><span>{{ source_kind(f.url) }} · {{ section_labels.get(f.category, f.category) }} · {{ 'Pausada' if not f.enabled else 'Con problemas' if health and health.health.level == 'failing' else 'Activa' }}</span><span>Última consulta correcta: {{ localtime(health.last_success, '%d/%m · %H:%M') if health and health.last_success else 'pendiente' }}</span><a href="{{ f.url }}" target="_blank" rel="noopener">{{ f.url }}</a></div>
+ <form method="post" action="/reels/manage/source/{{ f.id|urlencode }}"><a class="subtle" href="/reels?source={{ f.id|urlencode }}">Leer</a><button class="subtle" name="action" value="toggle">{{ 'Activar' if not f.enabled else 'Pausar' }}</button><button class="subtle danger" name="action" value="remove" data-confirm="¿Quitar este seguimiento? Las noticias guardadas permanecen.">Quitar</button></form></div>
+ {% else %}<p>Aún no has añadido fuentes.</p>{% endfor %}</div></section>
+ <section class="manage-panel"><h2>Lo que importa para ti</h2>
+ <p class="field-help reaction-help">En cada noticia, usa 👍 Me interesa o 👎 No me interesa. Tus reacciones se guardan en esta Mac y ajustan Actualidad al volver a abrirla, comparando palabras del titular, fuentes y temas. Funcionan sin IA de pago. Puedes quitar una reacción tocándola otra vez; Pendientes conserva su orden.</p>
+ <form method="post" action="/reels/manage/preferences">
+  <label>Intereses y contexto<textarea name="interests" rows="7" maxlength="15000" placeholder="Me interesan...">{{ interests }}</textarea></label>
+  <p class="field-help">Con IA configurada, este contexto ayuda a priorizar noticias. Las búsquedas de arriba funcionan sin IA y consultan temas concretos.</p>
+  <label>Consultar fuentes cada<select name="minutes">{% for n in [15,30,60,120] %}<option value="{{ n }}" {{ 'selected' if cfg.schedules.tech_minutes == n }}>{{ n }} minutos</option>{% endfor %}</select></label>
+  <p class="field-help">La recolección funciona aunque cierres el navegador. El equipo o servidor que la ejecuta debe seguir encendido y conectado.</p>
+  <button class="primary" type="submit">Guardar preferencias</button>
+ </form></section>
+ <p class="field-help">Los extractos provienen de las fuentes. Los resúmenes con IA requieren configurar un modelo en <a href="/settings/general">ajustes avanzados</a>. No se activa ningún servicio de pago automáticamente.</p>
+</div>
+{% endblock %}

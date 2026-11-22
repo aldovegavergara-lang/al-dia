@@ -81,7 +81,9 @@ def entry_to_item(entry, source: Source) -> Item | None:
         guid=entry.get("id") or link,
         published=published,
         snippet=html_to_text(summary),
-        publisher=source.name,
+        # Search feeds aggregate other outlets: retain the original publisher on the card.
+        publisher=(html_to_text((entry.get("source") or {}).get("title")) or source.name)
+                  if urlsplit(source.url).hostname == "news.google.com" else source.name,
         extra={"image": image} if image else {},
     )
 

@@ -4,16 +4,7 @@
 name: Pages
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "site/**"
-      - "newsnest/**"
-      - "demo/**"
-      - "requirements.txt"
-      - ".github/workflows/pages.yml"
-  schedule:
-    - cron: "17 4 * * *"
+  # No hosted site is published by pushing this local reader's source code.
   workflow_dispatch:
 
 permissions:

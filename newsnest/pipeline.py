@@ -12,17 +12,20 @@ from newsnest.models import FetchResult, FetchStatus, Item
 from newsnest.grouping import StoryIndex, new_story, touch_story
 from newsnest.textmatch import normalize_url, title_tokens
 from newsnest.watches import Prefilter
+from newsnest.library import remember_discovery, remember_sources
 
 def ingest(conn: sqlite3.Connection, source: Source, items: list[Item], prefilter: Prefilter,
            now: datetime) -> list[int]:
     """Insert new items; returns their ids. Items whose normalized URL is known are skipped."""
     new_ids = []
     with transaction(conn):
+        remember_sources(conn, [source], now)
         index = StoryIndex.load(conn, now)
         for item in items:
             url_norm = normalize_url(item.url)
             known = conn.execute("SELECT id, extra FROM items WHERE url_norm = ?", (url_norm,)).fetchone()
             if known:
+                remember_discovery(conn, known['id'], source.id, now)
                 # Items stored before image capture existed get their image on the next poll
                 extra = loads(known["extra"], {}) or {}
                 new_media = {k: item.extra[k] for k in ("image", "logo") if item.extra.get(k) and k not in extra}
@@ -44,6 +47,7 @@ def ingest(conn: sqlite3.Connection, source: Source, items: list[Item], prefilte
             if story is None:
                 story = new_story(conn, source.category, now)
             conn.execute("UPDATE items SET story_id = ? WHERE id = ?", (story, item_id))
+            remember_discovery(conn, item_id, source.id, now)
             touch_story(conn, story, now)  # after the item joined, so the outlet count includes it
             index.add(story, source.id, ts, frozenset(tokens))
             new_ids.append(item_id)

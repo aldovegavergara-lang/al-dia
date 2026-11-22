@@ -454,9 +454,16 @@ def build_sources(cfg: Config) -> list[Source]:
 
     sources: list[Source] = []
     for f in cfg.feeds:
-        sources.append(Source(id=f.id, type="rss", category=f.category, name=f.name or f.id,
+        parts = urlsplit(f.url)
+        release = re.fullmatch(r"/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases\.atom", parts.path)
+        is_release = parts.hostname == "github.com" and release is not None
+        params = {"https_links": f.https_links, "favicon": f.favicon}
+        if is_release:
+            params.update(repo=release.group(1), include_prereleases=False)
+        sources.append(Source(id=f.id, type="github_releases" if is_release else "rss",
+                              category=f.category, name=f.name or f.id,
                               url=f.url, enabled=f.enabled, daily_cap=cap(f.daily_cap, f.category),
-                              params={"https_links": f.https_links, "favicon": f.favicon}))
+                              params=params))
 
     gh = cfg.github_releases
     for repo in gh.repos:

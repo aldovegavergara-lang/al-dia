@@ -1,9 +1,7 @@
 name: Docker publish
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*.*.*"]
+  # Al día runs locally. Publishing an image is an explicit maintainer action.
   workflow_dispatch:
 
 permissions:

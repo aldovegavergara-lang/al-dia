@@ -1,0 +1,97 @@
+{% extends 'reels_base.html' %}
+{% block body_class %}reader-page{% endblock %}
+{% block content %}
+<button class="reader-menu-toggle" data-reader-menu aria-controls="reader-menu" aria-expanded="false" aria-label="Mostrar menú superior{{ ' · filtros activos' if has_filters }}"><span aria-hidden="true">☰</span> <span data-menu-label>Menú</span>{% if has_filters %}<span class="filter-dot" title="Filtros activos" aria-hidden="true"></span>{% endif %}</button>
+<header class="reader-top" id="reader-menu" hidden>
+ <a class="mobile-brand" href="/reels">al día<span>✳</span></a>
+ <nav class="filters" aria-label="Filtrar noticias">
+  <a href="{{ reader_url(view='pending',order='oldest') }}" {% if view == 'pending' %}aria-current="page"{% endif %}>Pendientes <span data-pending-count>{{ counts.pending }}</span></a>
+  <a href="{{ reader_url(view='latest',order='newest') }}" {% if view == 'latest' %}aria-current="page"{% endif %}>Actualidad</a>
+  <a href="{{ reader_url(view='read',order='newest') }}" {% if view == 'read' %}aria-current="page"{% endif %}>Leídas</a>
+  <a href="{{ reader_url(view='saved',order='newest') }}" {% if saved %}aria-current="page"{% endif %}>Guardados</a>
+  {% for t in topic_rules if t.enabled %}<a href="{{ reader_url(topic=t.id,after=0) }}" {% if article_filters.topic == t.id %}aria-current="page"{% endif %}>{{ t.name }}</a>{% endfor %}
+ </nav>
+ <button class="icon-button library-search-toggle" popovertarget="library-search" aria-label="Buscar y filtrar la biblioteca" title="Buscar y filtrar"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg></button>
+ <button class="refresh icon-button" data-refresh title="Consultar fuentes ahora" aria-label="Consultar fuentes ahora">⟳</button>
+ <a class="mobile-settings icon-button" href="/reels/manage" aria-label="Temas y fuentes">☷</a>
+</header>
+<div class="library-search" id="library-search" popover>
+ <div class="panel-heading"><h2>Filtrar noticias</h2><button class="icon-button" popovertarget="library-search" popovertargetaction="hide" aria-label="Cerrar filtros">×</button></div>
+ <p class="field-help"><strong>{{ total }} resultado{{ 's' if total != 1 }}</strong> con los filtros aplicados. Combina tema, fuente, fecha y reacciones.</p>
+ {% if saved_views %}<details class="saved-views"><summary>Tus vistas guardadas · {{ saved_views|length }}</summary><nav aria-label="Vistas guardadas">{% for v in saved_views %}<a href="{{ view_url(v) }}">{{ v.name }} ↗</a>{% endfor %}</nav></details>{% endif %}
+ <form action="/reels" method="get" id="reader-filters">
+  <label>Qué quieres leer<select name="view">{% for key,label in [('pending','Pendientes'),('latest','Actualidad · para ti'),('read','Leídas'),('saved','Guardados'),('all','Todas las recopiladas')] %}<option value="{{ key }}" {{ 'selected' if view == key }}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Buscar<input type="search" name="q" value="{{ query }}" maxlength="200" placeholder='Ej.: "Mercado Libre" OR DeepSeek -fútbol'></label>
+  <p class="field-help">Comillas para frases exactas, OR para alternativas y -palabra para excluir.</p>
+  <label>Tema automático<select name="topic"><option value="all">Todos los temas</option>{% for t in topic_rules if t.enabled %}<option value="{{ t.id }}" {{ 'selected' if article_filters.topic == t.id }}>{{ t.name }}</option>{% endfor %}<option value="unclassified" {{ 'selected' if article_filters.topic == 'unclassified' }}>Sin clasificar</option>{% if article_filters.topic not in ['all','unclassified'] and article_filters.topic not in topic_rules|selectattr('enabled')|map(attribute='id')|list %}<option value="{{ article_filters.topic }}" selected>Tema pausado o eliminado</option>{% endif %}</select></label>
+  <label>Fuente o búsqueda<select name="source"><option value="">Todas, incluidas las anteriores</option>{% for s in library_sources %}<option value="{{ s.source_id }}" {{ 'selected' if source == s.source_id }}>{{ s.name }} · {{ s.items }} artículos</option>{% endfor %}</select></label>
+  <div class="form-row">
+   <label>Publicadas en<select name="period">{% for n,label in [(0,'Cualquier fecha'),(24,'Últimas 24 horas'),(72,'Últimos 3 días'),(168,'Últimos 7 días'),(720,'Últimos 30 días')] %}<option value="{{ n }}" {{ 'selected' if article_filters.period == n }}>{{ label }}</option>{% endfor %}</select></label>
+   <label>Tu reacción<select name="reaction">{% for key,label in [('all','Cualquiera'),('liked','👍 Me interesan'),('disliked','👎 No me interesan'),('unrated','Sin reacción')] %}<option value="{{ key }}" {{ 'selected' if article_filters.reaction == key }}>{{ label }}</option>{% endfor %}</select></label>
+  </div>
+  <label>Excluir palabras o frases<input name="exclude" value="{{ article_filters.exclude }}" maxlength="1000" placeholder="Ej.: fútbol, horóscopo, celebridades"></label>
+  <label class="check-field"><input type="checkbox" name="bookmarked" value="1" {{ 'checked' if article_filters.bookmarked }}> Solo noticias guardadas</label>
+  <details class="advanced-filters"><summary>Más opciones</summary>
+   <label>Sección de la fuente<select name="f"><option value="all">Todas las secciones</option>{% for s in cfg.all_sections %}<option value="{{ s.key }}" {{ 'selected' if selected == s.key }}>{{ s.label }}</option>{% endfor %}</select></label>
+   <label>Orden de la biblioteca<select name="order"><option value="oldest" {{ 'selected' if order == 'oldest' }}>Recopiladas más antiguas primero</option><option value="newest" {{ 'selected' if order == 'newest' }}>Recopiladas más nuevas primero</option></select></label>
+   <label>Ventana de Actualidad<select name="hours"><option value="24" {{ 'selected' if hours == 24 }}>24 horas</option><option value="72" {{ 'selected' if hours == 72 }}>3 días</option></select></label>
+   <p class="field-help">Actualidad aplica esta ventana y ordena por frescura y reacciones. Los demás filtros también se aplican; una noticia sin fecha no pasa un filtro de publicación.</p>
+  </details>
+  <div class="empty-actions"><button class="primary" type="submit">Aplicar filtros</button><a class="secondary" href="/reels">Quitar filtros</a></div>
+  <details class="save-view"><summary>Guardar esta combinación</summary><label>Nombre de la vista<input name="name" maxlength="60" placeholder="Ej.: Modelos chinos sin ruido"></label><button class="secondary" type="button" data-save-view>Guardar vista</button><p class="field-help">Guarda los filtros del formulario en tu Mac para volver desde cualquier dispositivo conectado.</p></details>
+  <p class="field-help">Los temas se asignan por coincidencias en título, extracto o dirección de la noticia. Una noticia puede tener varios. <a href="/reels/manage#auto-topics">Editar reglas de temas</a>.</p>
+ </form>
+</div>
+<button class="new-stories" data-new-stories hidden>Hay novedades. Cargar noticias</button>
+<div class="reel-feed" tabindex="0" aria-label="Noticias. Desliza o usa las teclas arriba y abajo." data-version="{{ version_id }}" data-hours="{{ hours }}" data-view="{{ view }}">
+{% for c in cards %}
+{% set r = c.lead.row %}{% set sm = c.summary_member %}
+<article class="reel" data-id="{{ c.lead.id }}" data-ids="{{ c.ids }}" aria-label="{{ r.title }}">
+ <div class="reel-visual" aria-hidden="true">
+ {% if c.image %}<img src="{{ c.image }}" alt="" loading="{{ 'eager' if loop.first else 'lazy' }}" referrerpolicy="no-referrer" decoding="async">{% endif %}
+ <div class="visual-grain"></div>
+ </div>
+ {% set labels = card_topics.get(c.lead.id, []) %}
+ <div class="reel-topline"><span class="section-tag">{{ labels[0].name if labels else 'Sin clasificar' }} · {{ 'últimas ' ~ hours ~ ' h' if view == 'latest' else 'Pendiente' if view == 'pending' else 'Leída' if view == 'read' else 'Guardada' if saved else 'Biblioteca' }}</span><span class="reel-position">{{ loop.index }} / {{ cards|length }}</span></div>
+ <div class="reel-content">
+  <div class="publisher"><span class="publisher-badge">{{ initials(r.publisher or c.lead.source_name) }}</span><strong>{{ r.publisher or c.lead.source_name }}</strong>{% if r.published %}<time datetime="{{ r.published }}" title="Fecha de publicación indicada por la fuente">Publicado {{ localtime(r.published, '%d/%m · %H:%M') }}</time>{% else %}<span>Fecha de publicación no informada</span>{% endif %}</div>
+  <div class="story-copy">
+   <h1>{{ r.title }}</h1>
+   {% if labels %}<div class="auto-topics" aria-label="Temas detectados">{% for t in labels %}<a href="{{ reader_url(topic=t.id,after=0) }}" title="Coincide con: {{ t.matched|join(', ') }}">{{ t.name }}</a>{% endfor %}</div>{% endif %}
+   {% if sm %}<p class="text-label">RESUMEN CON IA</p><p class="story-summary">{{ sm.row.summary }}</p>
+    {% set points = key_points(sm.row) %}{% if points %}<ul class="key-points">{% for p in points[:3] %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
+   {% elif r.snippet %}<p class="story-summary">{{ r.snippet|striptags }}</p><span class="excerpt-label">Extracto de la fuente</span>
+   {% else %}<p class="story-summary">Esta fuente publicó el titular sin descripción. Puedes leer la noticia completa en su sitio.</p>{% endif %}
+   {% if c.watches %}<div class="topic-tags">{% for w in c.watches %}<span>{{ w }}</span>{% endfor %}</div>{% endif %}
+   <details class="classification-info"><summary>¿Por qué estos temas?</summary><p>Sección de la fuente: {{ section_labels.get(r.category, r.category) }}. Coincidencias en el título, extracto o dirección de la noticia:</p>{% for t in labels %}<p><strong>{{ t.name }}</strong>: {{ t.matched|join(', ') }}</p>{% else %}<p>Ninguna regla activa coincide. Puedes crear o editar un tema.</p>{% endfor %}<a href="/reels/manage#auto-topics">Editar reglas</a></details>
+   <p class="library-origin">Recopilada {{ localtime(r.fetched_at, '%d/%m · %H:%M') }}{% if origins.get(c.lead.id) %} · {{ origins[c.lead.id]|map(attribute='name')|unique|join(', ') }}{% endif %}</p>
+   {% if c.others %}<details class="other-sources"><summary>También en {{ c.others|length }} artículo{{ 's' if c.others|length != 1 }}</summary>{% for m in c.others %}<a href="/go/{{ m.id }}" target="_blank" rel="noopener">{{ m.source_name }} · {{ m.row.title }}</a>{% endfor %}</details>{% endif %}
+  </div>
+  {% set rating = card_rating(c) %}
+  <div class="story-feedback" role="group" aria-label="Ajustar tus intereses" data-rating="{{ rating }}">
+   <button data-reaction="1" data-item-id="{{ c.lead.id }}" aria-pressed="{{ 'true' if rating == 1 else 'false' }}" aria-label="Me interesa: priorizar noticias parecidas"><span aria-hidden="true">👍</span> Me interesa</button>
+   <button data-reaction="-1" data-item-id="{{ c.lead.id }}" aria-pressed="{{ 'true' if rating == -1 else 'false' }}" aria-label="No me interesa: bajar noticias parecidas"><span aria-hidden="true">👎</span> No me interesa</button>
+  </div>
+  <div class="story-footer"><a class="source-link" href="/go/{{ c.lead.id }}" target="_blank" rel="noopener">Leer en la fuente <span>↗</span></a><span class="reading-hint">{{ 'Guardados' if saved else 'Desliza para seguir' }}</span></div>
+ </div>
+ <div class="reel-actions">
+  <button data-save data-ids="{{ c.ids }}" aria-pressed="{{ 'true' if c.saved else 'false' }}" aria-label="Guardar noticia"><svg viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></svg><span>Guardar</span></button>
+  <button data-read data-read-value="{{ 0 if c.read else 1 }}" data-ids="{{ c.ids }}" aria-label="{{ 'Volver a pendientes' if c.read else 'Marcar como leída' }}"><svg viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></svg><span>{{ 'Pendiente' if c.read else 'Leída' }}</span></button>
+  <button data-share data-title="{{ r.title }}" data-url="{{ r.url }}" aria-label="Compartir noticia"><svg viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M5 13v7h14v-7"/></svg><span>Compartir</span></button>
+ </div>
+</article>
+{% endfor %}
+<section class="reel end-card">
+ <span class="end-symbol">✳</span>
+ <p class="text-label">{{ total }} {{ 'PENDIENTES' if view == 'pending' else 'NOTICIAS EN ESTA VISTA' }}</p>
+ <h1>{{ 'Hay más por leer.' if next_after else 'Terminaste esta página.' if cards else 'No hay noticias en esta vista.' }}</h1>
+ <p>{% if view == 'pending' %}Tus noticias pendientes se conservan aunque pasen los días. Solo salen de esta bandeja al marcarlas como leídas o abrir su fuente. Deslizarlas no las marca como leídas.{% elif view == 'read' %}Este es tu historial de lectura. Puedes devolver una noticia a pendientes.{% elif saved %}Tus guardados permanecen aquí sin límite de antigüedad.{% elif view == 'all' %}Esta es tu biblioteca completa, incluidas noticias leídas y pendientes. Se aplican los filtros que elegiste.{% else %}Esta vista incluye publicaciones de las últimas {{ hours }} horas con fecha informada por la fuente. Se consultan novedades automáticamente cada {{ cfg.schedules.tech_minutes }} minutos.{% endif %}</p>
+ {% if next_after %}<a class="primary" href="{{ reader_url(after=next_after) }}">Cargar siguientes noticias</a>{% endif %}
+ <div class="empty-actions"><button class="primary" data-refresh>Consultar novedades</button><a class="secondary" href="/reels/manage">Temas y fuentes</a>{% if has_filters %}<a class="secondary" href="/reels">Quitar filtros</a>{% endif %}</div>
+ {% if view == 'latest' %}<p class="setup-note"><a href="{{ reader_url(hours=72 if hours == 24 else 24) }}">{{ 'Ampliar a los últimos 3 días' if hours == 24 else 'Volver a las últimas 24 horas' }}</a> · <a href="{{ reader_url(view='pending',order='oldest') }}">Ver todos los pendientes</a></p>{% endif %}
+ {% if status.banner %}<p class="setup-note">Hay avisos del recolector. <a href="/status">Ver estado</a></p>{% endif %}
+</section>
+</div>
+<div class="desktop-hint"><span>UNA NOTICIA A LA VEZ</span><p>Desplázate o usa ↑ ↓</p><a href="/reels/manage">Hazlo tuyo</a></div>
+<div class="reel-navigation"><button data-step="-1" aria-label="Noticia anterior">⌃</button><button data-step="1" aria-label="Siguiente noticia">⌄</button></div>
+{% endblock %}

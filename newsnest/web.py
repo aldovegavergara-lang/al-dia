@@ -67,7 +67,9 @@ def _start_scheduler():
     from apscheduler.schedulers.background import BackgroundScheduler
     from newsnest.runner import tick
     scheduler = BackgroundScheduler(timezone="UTC")
-    scheduler.add_job(tick, "interval", seconds=60, next_run_time=datetime.now(ZoneInfo("UTC")) + timedelta(seconds=5),
+    scheduler.add_job(tick, "interval", seconds=60,
+                      kwargs={"ai": (env("AI_ENABLED", "on") or "on").lower() not in ("off", "0", "false")},
+                      next_run_time=datetime.now(ZoneInfo("UTC")) + timedelta(seconds=5),
                       max_instances=1, coalesce=True, id="tick")
     scheduler.start()
     return scheduler
@@ -95,6 +97,8 @@ def _move_section(old: str, new: str) -> int:
 async def lifespan(_app: FastAPI):
     with session() as conn:
         migrate(conn)
+        from newsnest.library import initialize_library
+        initialize_library(conn, load_config(config_dir()).sources)
     _refile()
     scheduler = _start_scheduler()
     yield
@@ -1709,3 +1713,9 @@ def discovery_action(source_id: str, action: str, conn=Depends(get_conn), loaded
         status = "dismissed" if action == "remove" else "candidate"
     conn.execute("UPDATE candidates SET status = ?, decided_at = ? WHERE id = ?", (status, iso(utcnow()), row["id"]))
     return RedirectResponse("/settings/discover?saved=discovery_" + action, status_code=303)
+
+
+# Local Al día reading mode. Registered after the shared UI helpers are defined.
+import sys as _sys
+from newsnest.reels import register as _register_reels
+_register_reels(app, _sys.modules[__name__])

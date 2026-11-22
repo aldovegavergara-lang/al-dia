@@ -225,15 +225,12 @@ def test_stable_sessions_off_ranks_on_every_load(db, cfg, client, env):
 
 def test_the_migration_adds_the_table_to_an_existing_database(env):
     conn = connect()
-    migrate(conn)
-    conn.execute("DROP TABLE feed_sessions")
-    conn.execute("ALTER TABLE ai_calls DROP COLUMN provider")  # added by later migrations
-    for column in ("interest", "view_ms", "expanded_at"):
-        conn.execute(f"ALTER TABLE items DROP COLUMN {column}")
-    conn.execute("DROP TABLE interest_levels")
-    conn.execute("ALTER TABLE feedback DROP COLUMN prev_weight")
     before = next(i for i, sql in enumerate(MIGRATIONS) if "CREATE TABLE feed_sessions" in sql)
-    conn.execute("UPDATE schema_version SET version = ?", (before,))
+    # Build the actual historical schema; resetting a current version would leave newer tables behind.
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (before,))
+    for sql in MIGRATIONS[:before]:
+        conn.executescript(sql)
     assert migrate(conn) == len(MIGRATIONS)
     assert conn.execute("SELECT COUNT(*) FROM feed_sessions").fetchone()[0] == 0
     conn.close()

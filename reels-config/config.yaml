@@ -1,0 +1,49 @@
+timezone: America/Santiago
+region:
+  country: Chile
+  city: Santiago
+  tld: .cl
+max_item_age_days: 3
+sections:
+  - {key: news, label: Chile}
+  - {key: world, label: Mundo}
+  - {key: tech, label: Tecnología, icon: chip}
+  - {key: providers, label: Proveedores, icon: briefcase}
+schedules:
+  news_minutes: 15
+  world_minutes: 15
+  tech_minutes: 15
+feed:
+  window_hours: 72
+feeds:
+  - id: cooperativa
+    name: Cooperativa
+    url: https://www.cooperativa.cl/noticias/site/tax/port/all/rss_3___1.xml
+    category: news
+    daily_cap: 20
+  - id: bbc-mundo
+    name: BBC Mundo
+    url: https://feeds.bbci.co.uk/mundo/rss.xml
+    category: world
+    daily_cap: 20
+  - id: dw-es
+    name: DW Español
+    url: https://rss.dw.com/rdf/rss-sp-all
+    category: world
+    daily_cap: 15
+  - id: xataka
+    name: Xataka
+    url: https://www.xataka.com/index.xml
+    category: tech
+    daily_cap: 20
+watches: []
+github_releases:
+  category: tech
+  repos: []
+scoring:
+  enabled: false
+  summary_language: Spanish
+drift:
+  enabled: false
+budget:
+  daily_usd: 0

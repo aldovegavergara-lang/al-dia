@@ -4,6 +4,19 @@ from newsnest.config import load_config
 from newsnest.db import connect, migrate
 
 
+def test_release_feeds_use_stable_release_parser():
+    from newsnest.config import Config, build_sources
+    cfg = Config.model_validate({'feeds': [
+        {'id': 'codex-releases', 'name': 'Codex', 'url': 'https://github.com/openai/codex/releases.atom', 'category': 'tech'},
+        {'id': 'plain-rss', 'url': 'https://example.com/releases.atom', 'category': 'tech'},
+    ]})
+    sources = build_sources(cfg)
+    assert sources[0].type == 'github_releases'
+    assert sources[0].params['repo'] == 'openai/codex'
+    assert sources[0].params['include_prereleases'] is False
+    assert sources[1].type == 'rss'
+
+
 def test_removed_sections_are_ignored_not_rejected(env, caplog):
     path = env.config / "config.yaml"
     path.write_text(path.read_text() + """

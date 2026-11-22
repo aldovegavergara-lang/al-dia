@@ -7,6 +7,11 @@ data/
 *.db
 *.db-*
 *.sqlite3
+*.sqlite
+.local-password
+*.log
+.DS_Store
+logs/
 
 # Python
 .venv/

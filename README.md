@@ -1,3 +1,182 @@
+# Al día · Noticias en formato Reels
+
+Esta copia de NewsNest añade un lector de noticias con tarjetas verticales tipo Reels en `/reels`
+y una pantalla en español para mantener fuentes y búsquedas en `/reels/manage`.
+El menú superior empieza oculto para dar más espacio a las noticias. El botón **Menú**
+lo muestra; se cierra con **Cerrar**, Escape, al tocar fuera o al deslizar a otra noticia.
+Cada noticia tiene **Me interesa** y **No me interesa**. Se conserva una reacción por
+noticia, compartida entre sus versiones y reversible al tocar el mismo botón. Las
+reacciones ajustan el orden de **Actualidad** cuando se vuelve a abrir, con coincidencias
+de palabras del titular, fuente/editor y sección; las coincidencias de titular tienen más
+peso. El ajuste es local y acotado, conserva la frescura del ranking y no usa IA ni llamadas
+externas. Votar no marca como leída, no borra noticias y no cambia el orden ni los filtros
+de la biblioteca de Pendientes. Se reutilizan `items.rating` y `rated_at`, sin migración.
+Cambios locales: noviembre de 2026. Se conserva la licencia AGPL-3.0 del proyecto original.
+Origen: https://github.com/Lucifix/newsnest · commit `7a149a66d1c47478eb8f360053b28c7e5cbf4a21`.
+
+### Arranque local
+
+Requiere Python 3.12 o posterior. Clona este repositorio en una carpeta de tu elección:
+
+```sh
+git clone https://github.com/aldovegavergara-lang/al-dia.git AlDia
+cd AlDia
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python run-reels.py
+```
+
+Abre http://127.0.0.1:3097/reels. El servidor escucha solo en esta Mac.
+
+### Acceso desde el celular por Tailscale
+
+Con Tailscale conectado, configura el acceso HTTPS privado:
+
+```sh
+/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --https=8443 http://127.0.0.1:3097
+```
+
+El comando muestra tu dirección privada: `https://<nombre-de-tu-mac>.<tu-tailnet>.ts.net:8443/reels`.
+
+Conecta Tailscale en el celular a la misma red que esta Mac y abre ese enlace en el
+navegador. Se mantiene la contraseña del lector. La Mac debe estar activa y conectada.
+Tailscale Serve termina HTTPS y redirige al servidor local; está configurado en segundo
+plano, sin depender de una terminal abierta. Se usa el puerto 8443 para permitir que otra
+aplicación utilice el puerto 443.
+
+Para consultar o restablecer este acceso:
+
+```sh
+/Applications/Tailscale.app/Contents/MacOS/Tailscale serve status
+/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --https=8443 http://127.0.0.1:3097
+```
+
+Para desactivar solamente el acceso remoto del lector:
+
+```sh
+/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --https=8443 off
+```
+
+### Organización y servicio local
+
+Organización en macOS:
+
+- Código y entorno Python: `~/Develop/AlDia/`.
+- Configuración: `~/Library/Application Support/AlDia/config/`.
+- Artículos, guardados y estado: `~/Library/Application Support/AlDia/data/`.
+- Contraseña local: `~/Library/Application Support/AlDia/data/.local-password`, con permisos privados.
+- Registros: `~/Library/Logs/AlDia/service.log` y `error.log`.
+- Inicio automático: `~/Library/LaunchAgents/local.aldia.lector.plist`.
+
+La configuración inicial se copia desde `reels-config/` al arrancar por primera vez.
+Los cambios hechos desde la interfaz se conservan fuera del código. La contraseña se
+genera en el primer arranque: consulta el archivo privado indicado arriba para iniciar sesión.
+
+Servicio local (arranca al iniciar sesión y se recupera si el proceso termina):
+
+```sh
+.venv/bin/python scripts/servicio.py install
+.venv/bin/python scripts/servicio.py status
+.venv/bin/python scripts/servicio.py restart
+.venv/bin/python scripts/servicio.py stop
+```
+
+`stop` descarga el servicio de esta sesión. Usa `install` para volver a activarlo.
+
+Incluye Cooperativa, BBC Mundo, DW Español y Xataka. Después del primer arranque puedes
+añadir el perfil opcional con `.venv/bin/python scripts/configurar-fuentes.py`:
+IA y modelos nuevos, modelos chinos, agentes y harness, y Mercado Libre/Mercado Pago.
+Combina OpenAI, Hugging Face, The Decoder, tres feeds de Medium, lanzamientos oficiales
+de Codex/Claude Code/OpenCode/Hermes Agent y búsquedas temáticas. Desde **Temas y fuentes** puedes añadir
+RSS/Atom oficiales o búsquedas de Google News, seleccionar una sección, pausar o quitar fuentes,
+editar el contexto de intereses y cambiar la frecuencia de consulta.
+
+Las publicaciones de X llegan mediante búsquedas públicas indexadas y tienen cobertura parcial;
+no hay sesión de X conectada. Reddit/LocalLLaMA quedó preparado pero pausado: su RSS respondió
+HTTP 404 en la verificación del 22 de noviembre de 2026. No se muestra como una fuente activa.
+Los feeds `github.com/owner/repo/releases.atom` usan el lector de versiones estables, que
+excluye alphas, betas y otras preversiones. El perfil se puede volver a aplicar con
+`.venv/bin/python scripts/configurar-fuentes.py`; conserva fuentes ya existentes.
+
+El recolector comprueba cada minuto qué fuentes están pendientes; por defecto las consulta
+cada 15 minutos. Continúa al cerrar el navegador mientras la Mac esté activa y conectada.
+El LaunchAgent mantiene el proceso independiente de la terminal y del editor. No usa hosting externo.
+
+La vista inicial **Pendientes** es una biblioteca sin caducidad para las noticias ya recopiladas:
+no desaparecen al cumplir 24 horas ni por límites de ranking o por fuente. Se ordenan por
+recopilación más antigua primero para retomar la lectura, con páginas de 60 noticias. La lupa
+permite combinar texto, tema automático, sección de origen, fuente/búsqueda anterior, fecha
+de publicación, reacción y guardados, además del orden. **Leídas** conserva
+el historial y permite devolver noticias a pendientes. Abrir la fuente o pulsar **Leída** marca
+la noticia; deslizar o guardar no la marca. Los estados sobreviven a reinicios.
+
+**Actualidad** (`/reels?view=latest`) muestra publicaciones de las últimas 24 horas según la
+fecha indicada por la fuente, con una opción para ampliar a tres días. Una noticia sin fecha
+o con fecha futura no aparece como actualidad. Los artículos más antiguos que el recolector
+todavía no hubiera descubierto siguen sujetos al máximo inicial de tres días de las fuentes;
+esa restricción no elimina los artículos que ya están en la biblioteca.
+
+La base registra la fuente y URL de búsqueda de cada hallazgo, incluso si la misma URL aparece
+en varios seguimientos. Quitar o pausar un seguimiento no borra sus artículos ni el historial.
+Los datos previos se incorporaron conservando su origen conocido; no se inventan coincidencias
+con búsquedas anteriores que no estuvieran registradas. La migración toma una copia de la
+base antes de cambiar su estructura. La última consulta correcta se muestra por fuente en
+gestión; es independiente de la hora de actividad del recolector.
+
+Consulta de la biblioteca para asistentes locales, sin modificar lectura ni abrir artículos:
+
+```sh
+.venv/bin/python scripts/biblioteca.py --estado pendientes --tema china --buscar DeepSeek
+.venv/bin/python scripts/biblioteca.py --estado leidas --limite 20
+```
+
+La API autenticada `GET /reels/library` devuelve `counts`, `total`, `next_after` e `items`, con
+fechas, estado, reacciones, temas detectados y fuentes. Parámetros: `view=pending|read|saved|all`,
+`f` (sección de origen), `topic` (tema automático), `source`, `q`,
+`period=0|24|72|168|720` (horas según publicación), `reaction=all|liked|disliked|unrated`,
+`exclude` (frases separadas por comas), `bookmarked=1` (solo guardados),
+`order=oldest|newest`, `limit` (hasta 100) y `after` (cursor). El cursor evita saltar artículos
+al marcar como leída una página completa. La consulta por CLI abre la base en modo de solo lectura.
+
+### Filtros y temas automáticos
+
+Desde **Menú → lupa** combina filtros, usa comillas para frases exactas, `OR` para
+alternativas y `-palabra` para exclusiones. Puedes guardar la combinación con un nombre;
+queda en la base local y funciona también desde el celular. Una vista guardada filtra
+noticias recopiladas; las búsquedas periódicas en Internet se gestionan en Temas y fuentes.
+
+Los temas se detectan por palabras/frases en título, extracto y dirección de la noticia;
+no se heredan del nombre de la fuente ni de la consulta de Google News. Una noticia puede
+tener varios temas. **¿Por qué estos temas?** muestra las coincidencias. Las reglas se
+crean, editan, pausan o eliminan en **Temas y fuentes → Temas automáticos**. Los cambios
+se aplican al historial y a los nuevos hallazgos al abrir la vista. Son reglas locales,
+no comprensión semántica: los nombres ambiguos pueden requerir exclusiones o ajustes.
+
+Ejemplo de consulta local sin alterar estados:
+
+```sh
+.venv/bin/python scripts/biblioteca.py --etiqueta china --ultimas-horas 168 --excluir fútbol
+```
+
+Las reglas y vistas se guardan en SQLite, fuera del repositorio. No se borran noticias ni
+se marcan leídas al filtrar. El menú permanece oculto por defecto. Más contexto en
+[diseño de filtros](docs/reader-filters.md).
+
+Esta versión muestra extractos publicados por los medios. La IA está apagada y el presupuesto
+es cero; no necesita claves de pago. Para activar priorización y resúmenes con IA, configura
+proveedor/modelo y presupuesto en los ajustes avanzados, activa `scoring.enabled` y arranca con
+`NEWSNEST_AI_ENABLED=on`. Las búsquedas temáticas no necesitan IA y envían la consulta a Google News.
+Los enlaces de búsquedas pueden pasar por Google News antes de llegar al medio.
+
+Pruebas de la adaptación:
+
+```sh
+.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest -q tests/test_reels.py tests/test_reader_filters.py
+```
+
+---
+
 <div align="center">
 
 <img src="https://raw.githubusercontent.com/Lucifix/newsnest/main/newsnest/static/icons/icon-192.png" width="96" height="96" alt="NewsNest logo">

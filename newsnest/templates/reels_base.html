@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101316">
+<title>{% block title %}Al día · Tu lector de noticias{% endblock %}</title>
+<link rel="icon" href="/static/icons/favicon-32.png">
+<link rel="stylesheet" href="/static/reels.css?v=20261122-filters1">
+<script src="/static/reels.js?v=20261122-filters1" defer></script>
+</head>
+<body class="{% block body_class %}{% endblock %}">
+<aside class="sidebar">
+  <a class="brand" href="/reels"><span class="brand-icon">a.</span> al día<span class="edition">TU LECTOR PERSONAL</span></a>
+  <p class="side-label">Un poco de contexto.<br>Mucho menos ruido.</p>
+  <nav aria-label="Navegación principal">
+    <a href="/reels" {% if request.url.path == '/reels' and view == 'pending' %}aria-current="page"{% endif %}>◫ <span>Pendientes</span></a>
+    <a href="/reels?view=latest" {% if view == 'latest' %}aria-current="page"{% endif %}>✳ <span>Actualidad · 24 h</span></a>
+    <a href="/reels?view=read" {% if view == 'read' %}aria-current="page"{% endif %}>✓ <span>Leídas</span></a>
+    <a href="/reels?saved=1" {% if saved %}aria-current="page"{% endif %}>♧ <span>Guardados</span></a>
+    <a href="/reels/manage" {% if request.url.path == '/reels/manage' %}aria-current="page"{% endif %}>☷ <span>Temas y fuentes</span></a>
+  </nav>
+  <div class="side-bottom">
+    <a class="source-status" href="/status">{{ status.sources|selectattr('health.level', 'equalto', 'failing')|list|length }} fuentes con problemas</a>
+    {% set checked_sources = status.sources|rejectattr('health.level', 'equalto', 'disabled')|selectattr('last_success')|sort(attribute='last_success', reverse=true)|list %}
+    <p>Última fuente consultada<br><strong>{{ localtime(checked_sources[0].last_success, '%d/%m · %H:%M') if checked_sources else 'Primera consulta pendiente' }}</strong></p>
+    <p>Revisión cada {{ cfg.schedules.tech_minutes }} min<br><span>Mientras el servidor esté activo</span></p>
+    <a href="/settings/general">Configuración avanzada</a>
+    <small>Basado en <a href="{{ repo_url }}" target="_blank" rel="noopener">NewsNest</a> · AGPL-3.0<br>Adaptación local · noviembre de 2026</small>
+  </div>
+</aside>
+<main>{% block content %}{% endblock %}</main>
+<div id="notice" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

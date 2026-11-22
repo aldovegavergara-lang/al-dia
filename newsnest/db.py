@@ -256,6 +256,23 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE feedback ADD COLUMN prev_weight REAL
     """,
+    # Al día library: retain the source/search behind every discovery, even when the same URL
+    # arrives in several feeds or its subscription is later removed. Existing rows are backfilled
+    # at startup; migration SQL only creates the schema.
+    """
+    CREATE TABLE library_sources (
+        source_id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
+        category TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
+    );
+    CREATE TABLE item_sources (
+        item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES library_sources(source_id),
+        first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+        PRIMARY KEY (item_id, source_id)
+    );
+    CREATE INDEX item_sources_source ON item_sources(source_id, item_id);
+    CREATE INDEX items_unread_library ON items(id) WHERE read_at IS NULL
+    """,
 ]
 
 
