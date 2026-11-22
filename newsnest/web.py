@@ -73,6 +73,13 @@ def _start_scheduler():
                       kwargs={"ai": (env("AI_ENABLED", "on") or "on").lower() not in ("off", "0", "false")},
                       next_run_time=datetime.now(ZoneInfo("UTC")) + timedelta(seconds=5),
                       max_instances=1, coalesce=True, id="tick")
+    # The podcast is an independent job: it never delays a feed tick and a slow local TTS is bounded
+    # by its own subprocess timeout. The job runs every minute but podcast.tick() enforces the retry
+    # interval and the single generation lock, so overlapping runs are harmless and coalesced.
+    from newsnest import podcast
+    scheduler.add_job(podcast.tick, "interval", seconds=60,
+                      next_run_time=datetime.now(ZoneInfo("UTC")) + timedelta(seconds=10),
+                      max_instances=1, coalesce=True, id="podcast")
     scheduler.start()
     return scheduler
 

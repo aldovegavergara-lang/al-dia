@@ -43,7 +43,58 @@
  </form>
 </div>
 <button class="new-stories" data-new-stories hidden>Hay novedades. Cargar noticias</button>
-<div class="reel-feed" tabindex="0" aria-label="Noticias. Desliza o usa las teclas arriba y abajo." data-version="{{ version_id }}" data-hours="{{ hours }}" data-view="{{ view }}">
+<div class="reel-feed" tabindex="0" aria-label="Noticias y resumen diario en audio. Desliza o usa las teclas arriba y abajo." data-version="{{ version_id }}" data-hours="{{ hours }}" data-view="{{ view }}">
+{% if podcast %}
+{% set p_day = (podcast.day|string) if podcast.day is defined and podcast.day else '' %}
+{% set p_age = (today - today.fromisoformat(p_day)).days if p_day else none %}
+{% if p_age == 1 %}
+ {% set p_heading = 'Tu resumen de ayer' %}
+{% elif p_age is not none and p_age > 1 %}
+ {% set p_heading = 'Tu resumen de hace ' ~ p_age ~ ' días' %}
+{% else %}
+ {% set p_heading = 'Tu resumen diario' %}
+{% endif %}
+{% set p_duration = podcast.duration_seconds|default(0)|int %}
+{% set p_minutes = p_duration // 60 %}
+{% set p_seconds = p_duration - p_minutes * 60 %}
+{% set p_items = podcast.item_count|default(0)|int %}
+{% set p_total = podcast.total_items|default(0)|int %}
+{% set p_transcript = podcast.transcript if podcast.transcript is defined and podcast.transcript else '' %}
+{% set p_sources = podcast.sources if podcast.sources is defined and podcast.sources else [] %}
+<article class="reel podcast-reel" data-podcast-reel data-podcast-day="{{ p_day }}" aria-labelledby="podcast-title">
+ <div class="podcast-visual" aria-hidden="true"></div>
+ <div class="reel-topline podcast-topline"><span class="section-tag">PODCAST · RESUMEN DIARIO</span><span class="reel-position">AUDIO</span></div>
+ <div class="podcast-content">
+  <p class="podcast-kicker">TITULARES Y EXTRACTOS</p>
+  <h1 class="podcast-title" id="podcast-title">{{ p_heading }}</h1>
+  <p class="podcast-episode-title">Titulares y extractos · voz local</p>
+  <p class="podcast-meta">
+   <span>{% if p_duration %}{{ p_minutes }} min{% if p_seconds %} {{ p_seconds }} s{% endif %}{% else %}Duración no informada{% endif %}</span>
+   <span>{{ p_items }} noticias de {{ p_total }} recopiladas</span>
+  </p>
+  {% if podcast.audio_url %}
+  <div class="podcast-player">
+   <button type="button" class="podcast-toggle" data-podcast-toggle aria-label="Reproducir el resumen en audio" aria-pressed="false" hidden><span class="podcast-toggle-icon" data-podcast-icon aria-hidden="true">▶</span><span data-podcast-label>Escuchar resumen</span></button>
+   <audio class="podcast-audio" data-podcast-audio controls preload="none" playsinline src="{{ podcast.audio_url }}" aria-label="Reproductor del {{ p_heading }}. No se reproduce automáticamente.">Tu navegador no puede reproducir audio. <a href="{{ podcast.audio_url }}">Abrir el archivo de audio</a>.</audio>
+   <p class="podcast-status" data-podcast-status role="status" aria-live="polite">Listo para escuchar. No se reproduce automáticamente.</p>
+  </div>
+  <p class="podcast-fallback" data-podcast-error hidden>No se pudo cargar el audio. <a href="{{ podcast.audio_url }}">Abrir el archivo de audio</a>.</p>
+  {% else %}
+  <p class="podcast-status" role="status">El audio de este resumen no está disponible todavía.</p>
+  {% endif %}
+  {% if p_transcript or p_sources %}
+  <details class="podcast-details">
+   <summary id="podcast-details-title">{{ 'Leer transcripción y fuentes' if p_transcript else 'Ver fuentes del resumen' }}</summary>
+   <div class="podcast-details-content" tabindex="0" role="region" aria-labelledby="podcast-details-title">
+   {% if p_transcript %}<div class="podcast-transcript">{{ p_transcript }}</div>{% endif %}
+   {% if p_sources %}<ul class="podcast-sources">{% for s in p_sources %}<li><a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.title }}{% if s.publisher %}<span>{{ s.publisher }}</span>{% endif %}</a></li>{% endfor %}</ul>{% endif %}
+   </div>
+  </details>
+  {% endif %}
+  {% if podcast.generated_at %}<p class="podcast-generated">Audio generado <time datetime="{{ podcast.generated_at }}" data-relative-time data-time-label="Generación" data-time-lower>{{ publication_age(podcast.generated_at)|lower }}</time></p>{% endif %}
+ </div>
+</article>
+{% endif %}
 {% for c in cards %}
 {% set r = c.lead.row %}{% set sm = c.summary_member %}
 <article class="reel" data-id="{{ c.lead.id }}" data-ids="{{ c.ids }}" aria-label="{{ r.title }}">

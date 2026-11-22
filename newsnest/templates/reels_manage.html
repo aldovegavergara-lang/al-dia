@@ -8,6 +8,19 @@
  <p class="manage-intro">Sigue proveedores, productos y temas. Combina publicaciones oficiales con búsquedas en medios y mantén tus fuentes desde aquí.</p>
  {% if error %}<p class="feedback error" role="alert">{{ error }}</p>{% endif %}
  {% if done %}<p class="feedback success" role="status">{{ done }}</p>{% endif %}
+ {% if podcast_status is defined %}
+ <section class="manage-panel" id="podcast"><h2>Podcast diario</h2>
+ {% if not podcast_enabled|default(false) %}<p class="field-help">Pausado.</p>
+ {% elif podcast_status.is_late|default(false) %}<p class="feedback error" role="status">El resumen de ayer se está retrasando; se reintentará automáticamente.</p>
+ {% elif podcast_status.state == 'ready' %}<p class="feedback success" role="status">Tu último episodio está listo. <a href="/reels">Escuchar resumen</a>.</p>
+ {% elif podcast_status.state == 'generating' %}<p class="field-help" role="status">Preparando el resumen de ayer.</p>
+ {% elif podcast_status.state in ['error','retry_wait','no_items'] %}<p class="field-help" role="status">Se reintentará la preparación automáticamente.</p>
+ {% else %}<p class="field-help">Esperando la próxima preparación.</p>{% endif %}
+ <p class="field-help">Preparación desde las 03:00, con disponibilidad prevista antes de las 04:00, hora de Chile. Voz generada en esta Mac.</p>
+ <p class="field-help">Titulares y extractos de tus fuentes. {% if podcast_max_stories|default(25) == 0 %}Incluye todas las historias elegibles.{% else %}Hasta {{ podcast_max_stories|default(25) }} historias por episodio.{% endif %} La tarjeta indica la cobertura del día.</p>
+ {% if podcast_status.last_success|default('') %}<p class="field-help">Última generación: <time datetime="{{ podcast_status.last_success }}" data-relative-time data-time-label="Generación" data-time-lower>{% if publication_age is defined %}{{ publication_age(podcast_status.last_success)|lower }}{% else %}registrada{% endif %}</time>.</p>{% endif %}
+ </section>
+ {% endif %}
  <section class="manage-panel" id="auto-topics"><h2>Temas automáticos</h2>
  <p class="field-help">Las reglas buscan palabras o frases completas en el título, extracto y dirección de cada noticia. Una noticia puede tener varios temas, aunque venga de un medio general. Se aplican también al historial, sin IA ni coste. Se ignoran mayúsculas y tildes. Usa comas para separar alternativas; las exclusiones impiden asignar ese tema.</p>
  {% for t in topic_rules %}<details class="topic-rule {{ 'paused' if not t.enabled }}"><summary>{{ t.name }} <span>{{ 'Activo' if t.enabled else 'Pausado' }}</span></summary>

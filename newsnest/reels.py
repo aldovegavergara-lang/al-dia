@@ -10,7 +10,7 @@ from datetime import timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from newsnest.bootstrap import config_dir, env
 from newsnest.config import LoadedConfig, load_config
@@ -18,6 +18,7 @@ from newsnest.config_edit import ConfigEditError, edit_config, section_list
 from newsnest.db import get_meta, iso, parse_iso, transaction, utcnow
 from newsnest.discovery import named_sources
 from newsnest.feed import view_feed
+from newsnest.podcast import audio_path as podcast_audio_path, latest_episode, public_status, settings as podcast_settings
 from newsnest.profile import read_profile, write_profile
 from newsnest.library import library_page, serialize_page
 from newsnest.reactions import card_rating, load_tastes, preference_multiplier
@@ -134,7 +135,13 @@ def register(app, ui):
             return '/reels?' + urlencode({k:v for k,v in params.items() if v not in ('',None,0)})
 
         version = conn.execute('SELECT COALESCE(MAX(id), 0) FROM items').fetchone()[0]
-        response = ui.render(request, 'reels.html', conn, loaded, cards=cards,
+        # The podcast card belongs only on the unfiltered first page of the reader. Read/saved pages,
+        # filtered views and later pages stay about the stories the reader asked for.
+        podcast = None
+        if (view in ('pending', 'latest', 'all') and f == 'all' and not source and not q
+                and not filters.active and after == 0 and hours == 24 and not saved):
+            podcast = latest_episode()
+        response = ui.render(request, 'reels.html', conn, loaded, cards=cards, podcast=podcast,
                              selected=f, source=source, saved=view=='saved', version_id=version, hours=hours,
                              view=view, query=q, order=order, counts=library.counts,
                              library_sources=library.source_options, origins=library.origins,
@@ -146,6 +153,20 @@ def register(app, ui):
         if token:
             ui._set_feed_cookie(request, response, token)
         return response
+
+    @app.get('/reels/podcast/{day}/audio')
+    def podcast_audio(day: str, v: str = '', conn=Depends(ui.get_conn)):
+        """Authenticated, range-capable audio. The file is never mounted as a public static folder.
+
+        ``v`` is optional: it selects the immutable version of that generation (``?v=<uuid>``);
+        without it the legacy ``episode.mp3`` of the first real episode resolves. The day is
+        parsed as a strict ISO date and the resolved file must stay inside ``podcasts/episodes``.
+        """
+        path = podcast_audio_path(day, v or None)
+        if path is None:
+            raise HTTPException(404, 'Episodio no encontrado.')
+        return FileResponse(path, media_type='audio/mpeg', content_disposition_type='inline',
+                            headers={'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=3600'})
 
     @app.post('/reels/reaction/{item_id}')
     def react(item_id: int, value: int = Form(...), conn=Depends(ui.get_conn)):
@@ -233,7 +254,9 @@ def register(app, ui):
                          source_kind=source_kind, topic_rules=topic_rules(conn),
                          saved_views=saved_views(conn), view_url=view_url,
                          error=request.query_params.get('error'),
-                         done=request.query_params.get('done'))
+                         done=request.query_params.get('done'),
+                         podcast_status=public_status(), podcast_enabled=podcast_settings().enabled,
+                         podcast_max_stories=podcast_settings().max_stories)
 
     @app.post('/reels/manage/source')
     def add_source(name: str = Form(...), kind: str = Form('search'),

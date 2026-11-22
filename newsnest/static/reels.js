@@ -33,6 +33,130 @@
     setInterval(() => { if (!document.hidden) updateRelativeTimes(); }, 60000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) updateRelativeTimes(); });
   }
+  // Daily podcast: native controls, local resume, and no autoplay or read-state side effects.
+  const podcastCards = [...document.querySelectorAll('[data-podcast-reel]')];
+  const podcastAudios = () => [...document.querySelectorAll('audio')];
+  function podcastClock(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  }
+  function podcastProgressKey(audio) {
+    const card = audio.closest('[data-podcast-reel]');
+    const source = card?.dataset.podcastDay || audio.getAttribute('src') || 'daily';
+    return 'aldia.podcast.progress.' + source.replace(/[^a-z0-9_-]/gi, '-');
+  }
+  function podcastReadProgress(audio) {
+    try {
+      const value = Number(localStorage.getItem(podcastProgressKey(audio)));
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    } catch { return 0; }
+  }
+  function podcastSaveProgress(audio) {
+    if (!audio || !Number.isFinite(audio.currentTime) || audio.currentTime < 3 || audio.ended) return;
+    try { localStorage.setItem(podcastProgressKey(audio), String(Math.floor(audio.currentTime))); } catch { /* Private mode. */ }
+  }
+  function podcastClearProgress(audio) {
+    try { localStorage.removeItem(podcastProgressKey(audio)); } catch { /* Private mode. */ }
+  }
+  function podcastSetStatus(card, text, error = false) {
+    const status = card.querySelector('[data-podcast-status]');
+    if (!status) return;
+    status.textContent = text;
+    if (error) status.dataset.tone = 'error'; else delete status.dataset.tone;
+  }
+  function podcastSync(card, audio) {
+    const toggle = card.querySelector('[data-podcast-toggle]');
+    if (!toggle) return;
+    const icon = card.querySelector('[data-podcast-icon]');
+    const label = card.querySelector('[data-podcast-label]');
+    const playing = !audio.paused && !audio.ended;
+    toggle.hidden = false;
+    toggle.setAttribute('aria-pressed', String(playing));
+    toggle.setAttribute('aria-label', playing ? 'Pausar el resumen en audio' : 'Reproducir el resumen en audio');
+    if (icon) icon.textContent = playing ? '❚❚' : '▶';
+    if (label) label.textContent = playing ? 'Pausar' : (audio.currentTime > 2 && !audio.ended ? 'Continuar' : 'Escuchar resumen');
+  }
+  function podcastMediaSession(card, audio) {
+    if (!('mediaSession' in navigator) || !('MediaMetadata' in window)) return;
+    try {
+      const heading = card.querySelector('.podcast-title')?.textContent.trim() || 'Resumen diario';
+      const episode = card.querySelector('.podcast-episode-title')?.textContent.trim();
+      navigator.mediaSession.metadata = new MediaMetadata({title: episode || heading, artist: 'Al día', album: heading});
+      if (navigator.mediaSession.setActionHandler) {
+        navigator.mediaSession.setActionHandler('play', () => { audio.play().catch(() => {}); });
+        navigator.mediaSession.setActionHandler('pause', () => audio.pause());
+      }
+    } catch { /* Media Session is an enhancement; playback works without it. */ }
+  }
+  for (const card of podcastCards) {
+    const audio = card.querySelector('[data-podcast-audio]');
+    const toggle = card.querySelector('[data-podcast-toggle]');
+    if (!audio) continue;
+    const savedPosition = podcastReadProgress(audio);
+    let restored = false, lastSaved = 0;
+    if (savedPosition > 2) podcastSetStatus(card, `Continuar desde ${podcastClock(savedPosition)}. Pulsa reproducir.`);
+    if (toggle) {
+      toggle.hidden = false;
+      toggle.addEventListener('click', () => {
+        podcastSetStatus(card, audio.paused ? 'Preparando audio…' : 'Pausando…');
+        if (audio.paused) {
+          const attempt = audio.play();
+          if (attempt?.catch) attempt.catch(() => {
+            podcastSetStatus(card, 'No se pudo reproducir el audio. Usa el enlace de respaldo.', true);
+            const fallback = card.querySelector('[data-podcast-error]'); if (fallback) fallback.hidden = false;
+          });
+        } else audio.pause();
+      });
+    }
+    audio.addEventListener('click', () => { if (audio.paused) podcastSetStatus(card, 'Preparando audio…'); });
+    audio.addEventListener('loadedmetadata', () => {
+      if (!restored) {
+        restored = true;
+        const position = podcastReadProgress(audio);
+        if (position > 2 && Number.isFinite(audio.duration) && position < audio.duration - 3) {
+          audio.currentTime = position;
+          podcastSetStatus(card, audio.paused
+            ? `Continuar desde ${podcastClock(position)}. Pulsa reproducir.`
+            : `Reproduciendo desde ${podcastClock(position)}.`);
+        }
+      }
+      podcastSync(card, audio);
+    });
+    audio.addEventListener('play', () => {
+      podcastMediaSession(card, audio);
+      podcastSetStatus(card, 'Cargando audio…');
+      podcastSync(card, audio);
+    });
+    audio.addEventListener('playing', () => { podcastSetStatus(card, 'Reproduciendo resumen.'); podcastSync(card, audio); });
+    audio.addEventListener('waiting', () => podcastSetStatus(card, 'Cargando audio…'));
+    audio.addEventListener('pause', () => {
+      podcastSaveProgress(audio);
+      podcastSetStatus(card, audio.ended ? 'Resumen terminado.' : 'En pausa. Puedes seguir deslizando.');
+      podcastSync(card, audio);
+    });
+    audio.addEventListener('timeupdate', () => {
+      const now = Date.now();
+      if (now - lastSaved > 4000) { lastSaved = now; podcastSaveProgress(audio); }
+    });
+    audio.addEventListener('ended', () => {
+      podcastClearProgress(audio);
+      podcastSetStatus(card, 'Resumen terminado. Las noticias siguen sin marcarse como leídas.');
+      podcastSync(card, audio);
+    });
+    audio.addEventListener('error', () => {
+      podcastSetStatus(card, 'No se pudo cargar el audio. Usa el enlace de respaldo.', true);
+      const fallback = card.querySelector('[data-podcast-error]'); if (fallback) fallback.hidden = false;
+      podcastSync(card, audio);
+    });
+    window.addEventListener('pagehide', () => podcastSaveProgress(audio));
+    document.addEventListener('visibilitychange', () => { if (document.hidden) podcastSaveProgress(audio); });
+    podcastSync(card, audio);
+  }
+  // Only one audio source plays at a time; scrolling or changing cards never pauses the podcast.
+  document.addEventListener('play', event => {
+    if (!(event.target instanceof HTMLAudioElement)) return;
+    for (const other of podcastAudios()) if (other !== event.target) other.pause();
+  }, true);
   const menuToggle = document.querySelector('[data-reader-menu]');
   const menu = document.querySelector('#reader-menu');
   if (menuToggle && menu) {
@@ -191,10 +315,13 @@
     }, {root:feed, threshold:.65});
     cards.forEach(card => observer.observe(card));
     document.addEventListener('keydown', event => {
-      if (/INPUT|TEXTAREA|SELECT|BUTTON/.test(event.target.tagName) || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target instanceof Element ? event.target : null;
+      // Native audio, seek controls, details and form controls keep their own arrow keys.
+      if (!target || target.closest('input, textarea, select, button, audio, video, summary, [contenteditable="true"]')
+          || event.ctrlKey || event.metaKey || event.altKey) return;
       if (['ArrowDown','PageDown','j','ArrowUp','PageUp','k'].includes(event.key)) {
         // Keep long story text scrollable before advancing to another card.
-        if (event.target.closest('.story-copy')) return;
+        if (target.closest('.story-copy, .podcast-details-content')) return;
         event.preventDefault();
         step(['ArrowDown','PageDown','j'].includes(event.key) ? 1 : -1);
       }
@@ -252,6 +379,7 @@
       return;
     }
     if ('save' in button.dataset) {
+      if (!button.dataset.ids) return;
       const previous = button.getAttribute('aria-pressed');
       const value = previous !== 'true';
       const finish = busy(button);
@@ -264,6 +392,7 @@
       } catch (e) { button.setAttribute('aria-pressed',previous); notify(e.message); } finally { finish(); }
     }
     if ('read' in button.dataset) {
+      if (!button.dataset.ids) return;
       const finish = busy(button);
       try {
         const value = button.dataset.readValue || '1';
