@@ -22,11 +22,12 @@ os.environ.setdefault('NEWSNEST_PASSWORD', password_file.read_text().strip())
 os.environ.setdefault('NEWSNEST_CONFIG_DIR', str(config))
 os.environ.setdefault('NEWSNEST_DATA_DIR', str(data))
 os.environ.setdefault('NEWSNEST_AI_ENABLED', 'off')
-from newsnest.bootstrap import ensure_dirs
-from newsnest.__main__ import setup_logging
-import uvicorn
-
 if __name__ == '__main__':
+    # Import the application only after its local environment has been configured.
+    from newsnest.bootstrap import ensure_dirs
+    from newsnest.__main__ import setup_logging
+    import uvicorn
+
     ensure_dirs()
     setup_logging()
     print('Al día: http://127.0.0.1:3097/reels', flush=True)

@@ -11,11 +11,12 @@ SUPPORT = Path.home()/'Library'/'Application Support'/'AlDia'
 os.environ.setdefault('NEWSNEST_CONFIG_DIR',str(SUPPORT/'config'))
 os.environ.setdefault('NEWSNEST_DATA_DIR',str(SUPPORT/'data'))
 
-from newsnest.bootstrap import config_dir
-from newsnest.config import load_config
-from newsnest.db import session, db_path
-from newsnest.library import library_page, serialize_page
-from newsnest.reader_filters import ArticleFilter
+# The standalone CLI must configure its import path and data location before app imports.
+from newsnest.bootstrap import config_dir  # noqa: E402
+from newsnest.config import load_config  # noqa: E402
+from newsnest.db import session, db_path  # noqa: E402
+from newsnest.library import library_page, serialize_page  # noqa: E402
+from newsnest.reader_filters import ArticleFilter  # noqa: E402
 
 
 if __name__ == '__main__':

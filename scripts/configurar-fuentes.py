@@ -14,8 +14,9 @@ SUPPORT = Path.home() / 'Library' / 'Application Support' / 'AlDia'
 os.environ.setdefault('NEWSNEST_CONFIG_DIR', str(SUPPORT / 'config'))
 os.environ.setdefault('NEWSNEST_DATA_DIR', str(SUPPORT / 'data'))
 
-from newsnest.config_edit import edit_config, section_list
-from newsnest.profile import write_profile
+# These imports require the standalone CLI's path/environment setup above.
+from newsnest.config_edit import edit_config, section_list  # noqa: E402
+from newsnest.profile import write_profile  # noqa: E402
 
 
 def news(query, spanish=False):

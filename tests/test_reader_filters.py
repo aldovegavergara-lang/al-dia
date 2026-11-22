@@ -8,7 +8,7 @@ from newsnest.db import connect, iso, utcnow
 from newsnest.models import Item
 from newsnest.pipeline import ingest
 from newsnest.watches import Prefilter
-from tests.test_reels import reader
+from tests.test_reels import reader  # noqa: F401 - shared pytest fixture
 
 
 def add_story(cfg, title, *, source='general', published=None, snippet='', url=None):

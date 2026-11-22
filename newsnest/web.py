@@ -12,6 +12,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import sys as _sys
 import zlib
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
@@ -52,6 +53,7 @@ from newsnest.sections import Tab, dock_tabs, foreign_local, move_section, refil
 from newsnest.status import collect_status
 from newsnest.summaries import key_points, summarize_on_demand
 from newsnest.textmatch import normalize_url
+from newsnest.reels import register as _register_reels
 
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
@@ -1716,6 +1718,4 @@ def discovery_action(source_id: str, action: str, conn=Depends(get_conn), loaded
 
 
 # Local Al día reading mode. Registered after the shared UI helpers are defined.
-import sys as _sys
-from newsnest.reels import register as _register_reels
 _register_reels(app, _sys.modules[__name__])
