@@ -1,9 +1,11 @@
 """Daily local podcast: the previous civil day's news, read by a local TTS.
 
-The episode is built from what the reader already stored. It is deliberately *extractive*: the
-transcript reads headlines and snippets published by the outlets, plus a coverage line naming the
-sources. It never invents facts, summaries or opinions. Read stories are included; hidden and muted
-items are not.
+The episode is built from what the reader already stored. When an editor model is configured, a
+local Spanish editorial stage rewrites the selected stories into a conversational narration before
+TTS; without one, the fallback stays *extractive* (stored headline plus snippet, attributed once).
+Neither path speaks an introduction, story numbers or "Cobertura" boilerplate: the cap and the full
+source list are visual metadata only. The editorial stage is not fact-checked; it can paraphrase
+and err. Read stories are included; hidden and muted items are not.
 
 Runtime files live outside the repository, under ``data_dir()/podcasts``:
 
@@ -44,6 +46,7 @@ from zoneinfo import ZoneInfo
 
 from newsnest.bootstrap import REPO_ROOT, config_dir, data_dir, env
 from newsnest.config import Config, Source, load_config
+from newsnest.podcast_context import related_context
 from newsnest.db import iso, parse_iso, session, utcnow
 from newsnest.digest import make_cards
 from newsnest.feed import story_hidden
@@ -60,6 +63,20 @@ DEFAULT_CHUNK_CHARS = 350
 DEFAULT_VOICE = "Vivian"
 DEFAULT_LANGUAGE = "Spanish"
 DEFAULT_TITLE = "Al día"
+DEFAULT_EDITOR_SCRIPT = str(REPO_ROOT / "scripts" / "podcast-editor.py")
+DEFAULT_EDITOR_TIMEOUT_SECONDS = 900
+DEFAULT_API_MODEL = "gpt-6-luna"
+DEFAULT_TEMPO = 1.0
+DEFAULT_SEED = 0
+
+# Editorial segments are untrusted model output: no tags/markup, no empty or runaway text.
+_NARRATION_TAG_RE = re.compile(
+    r"<\s*/?\s*[A-Za-z][^>]*>|<\|[^>]*\||```|\*\*|^\s{0,3}#{1,6}\s|^\s*[-*]\s",
+    re.IGNORECASE | re.MULTILINE,
+)
+_MAX_NARRATION_CHARS = 2000
+_MIN_NARRATION_WORDS = 5
+_MAX_NARRATION_WORDS = 200
 
 _DAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 _MONTHS = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
@@ -95,6 +112,20 @@ class PodcastSettings:
     temperature: float = 0.45
     max_tokens: int = 512
     title: str = DEFAULT_TITLE
+    # Optional Spanish editorial stage (runs before TTS; off when editor_model is empty).
+    editor_python: str = ""
+    editor_model: str = ""
+    editor_script: str = DEFAULT_EDITOR_SCRIPT
+    editor_timeout_seconds: int = DEFAULT_EDITOR_TIMEOUT_SECONDS
+    editor_provider: str = "local"  # 'local', 'openai' or 'codex' (all explicit)
+    editor_api_model: str = DEFAULT_API_MODEL
+    editor_codex_binary: str = "codex"
+    # Voice-cloning reference pair, pronunciation map and synthesis controls for the TTS runner.
+    ref_audio: str = ""
+    ref_text_file: str = ""
+    pronunciations_file: str = ""
+    tempo: float = DEFAULT_TEMPO
+    seed: int = DEFAULT_SEED
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -111,6 +142,7 @@ class Story:
     score: float
     publisher: str
     sources: list[dict]
+    context: list[dict] = field(default_factory=list)
 
 
 def podcasts_root() -> Path:
@@ -204,6 +236,23 @@ def settings() -> PodcastSettings:
     language = str(env("PODCAST_LANGUAGE") or raw.get("language") or DEFAULT_LANGUAGE)
     instruct = str(env("PODCAST_INSTRUCT") or raw.get("instruct") or "")
     title = str(env("PODCAST_TITLE") or raw.get("title") or DEFAULT_TITLE)
+    editor_python = str(env("PODCAST_EDITOR_PYTHON") or raw.get("editor_python") or python)
+    editor_model = str(env("PODCAST_EDITOR_MODEL") or raw.get("editor_model") or "")
+    editor_script = str(env("PODCAST_EDITOR_SCRIPT") or raw.get("editor_script") or DEFAULT_EDITOR_SCRIPT)
+    editor_timeout = _as_int(_pick(env("PODCAST_EDITOR_TIMEOUT_SECONDS"),
+                                   raw.get("editor_timeout_seconds")),
+                             DEFAULT_EDITOR_TIMEOUT_SECONDS, 30, 7200)
+    provider = str(env("PODCAST_EDITOR_PROVIDER") or raw.get("editor_provider") or "local").lower()
+    if provider not in ("local", "openai", "codex"):
+        provider = "local"
+    api_model = str(env("PODCAST_EDITOR_API_MODEL") or raw.get("editor_api_model") or DEFAULT_API_MODEL)
+    codex_binary = str(env("PODCAST_EDITOR_CODEX_BINARY") or raw.get("editor_codex_binary") or "codex")
+    ref_audio = str(env("PODCAST_REF_AUDIO") or raw.get("ref_audio") or "")
+    ref_text_file = str(env("PODCAST_REF_TEXT_FILE") or raw.get("ref_text_file") or "")
+    pronunciations_file = str(env("PODCAST_PRONUNCIATIONS_FILE")
+                              or raw.get("pronunciations_file") or "")
+    tempo = _as_float(_pick(env("PODCAST_TEMPO"), raw.get("tempo")), DEFAULT_TEMPO, 0.5, 2.0)
+    seed = _as_int(_pick(env("PODCAST_SEED"), raw.get("seed")), DEFAULT_SEED, 0, 2_147_483_647)
     return PodcastSettings(
         enabled=enabled, config_path=config_path, timezone=str(tz_name),
         start_hour=start_hour, ready_hour=ready_hour, max_stories=max_stories,
@@ -211,7 +260,11 @@ def settings() -> PodcastSettings:
         timeout_seconds=timeout_seconds, python=python, model=model, script=script,
         ffmpeg=ffmpeg, voice=voice, language=language, instruct=instruct,
         chunk_chars=chunk_chars, temperature=temperature, max_tokens=max_tokens,
-        title=title, errors=errors)
+        title=title, editor_python=editor_python, editor_model=editor_model,
+        editor_script=editor_script, editor_timeout_seconds=editor_timeout,
+        editor_provider=provider, editor_api_model=api_model, editor_codex_binary=codex_binary,
+        ref_audio=ref_audio, ref_text_file=ref_text_file,
+        pronunciations_file=pronunciations_file, tempo=tempo, seed=seed, errors=errors)
 
 
 # --- calendar ---------------------------------------------------------------
@@ -378,39 +431,169 @@ def select_stories(stories: list[Story], max_stories: int, max_per_source: int =
             break
     return selected
 
+
+# --- narration order ---------------------------------------------------------
+
+def _narration_group(story: Story) -> int:
+    """Stable thematic cluster: frontier tech first, then providers, world/news, other tech."""
+    text = f"{getattr(story, 'category', '')} {getattr(story, 'title', '')}".lower()
+    if (getattr(story, "category", "") == "ai"
+            or any(key in text for key in ("harness", "china", "chino",
+                                           "inteligencia artificial", "chatbot"))
+            or re.search(r"\b(?:ia|llm|gpt|claude|gemini|deepseek)\b", text)):
+        return 0
+    if any(key in text for key in ("proveedor", "provider", "cloud", "api ")):
+        return 1
+    if getattr(story, "category", "") in ("world", "news", "international"):
+        return 2
+    return 3
+
+
+def group_for_narration(selected: list[Story]) -> list[Story]:
+    """Reorder the same selected stories into contiguous themes, keeping score order inside each.
+
+    Selection (and its diversity cap) is untouched: the returned list has exactly the same items.
+    Round-robin selection alternates topics for fairness, which sounds choppy when read aloud, so
+    narration groups related themes and lets the editor write a few natural transitions instead.
+    """
+    # A stable sort keeps the caller's order inside a group when scores tie.
+    return sorted(selected, key=lambda story: (
+        _narration_group(story), -float(getattr(story, "score", -1.0) or -1.0)))
+
+
 # --- transcript -------------------------------------------------------------
 
 def build_transcript(day: date, selected: list[Story], total_items: int,
                      settings: PodcastSettings | None = None) -> str:
-    """Extractive Spanish transcript: headlines, snippets and explicit coverage, nothing invented."""
-    settings = settings or settings_default()
-    lines = [
-        f"{settings.title}. Resumen del {spanish_date(day)}.",
-        "Este audio es extractivo: lee titulares y fragmentos publicados por los medios. "
-        "No agrega hechos, interpretaciones ni opiniones.",
-    ]
-    if total_items > len(selected):
-        lines.append(
-            f"Se incluyen {len(selected)} de {total_items} historias elegibles para mantener el resumen breve; "
-            "la selección busca variar temas y fuentes.")
-    else:
-        lines.append(f"Se incluyen las {total_items} historias elegibles del día.")
-    missing = sum(1 for story in selected if not story.snippet)
-    if missing:
-        lines.append("Cuando el medio no entrega un fragmento, se lee solo el titular.")
-    for number, story in enumerate(selected, start=1):
-        lines.append(f"Historia {number}. {story.title}.")
+    """Extractive fallback: stored headline and snippet, attributed once, nothing invented.
+
+    No spoken introduction, story numbering, selection/missing explanations, "Cobertura" or outro:
+    the cap and the full source list are visual metadata, not narration. ``day``/``total_items``
+    stay in the signature so callers can switch between narration modes without changing shape.
+    """
+    lines = []
+    for story in selected:
+        headline = story.title.rstrip(".")
         if story.snippet:
-            lines.append(f"{story.publisher} publica: {story.snippet}")
+            lines.append(f"{headline}. {story.publisher}: {story.snippet.rstrip('.')}.")
         else:
-            lines.append(f"Titular de {story.publisher}; sin fragmento disponible.")
-        publishers = list(dict.fromkeys(s["publisher"] for s in story.sources))
-        if len(publishers) > 1:
-            lines.append(f"Cobertura: {len(publishers)} medios: {', '.join(publishers)}.")
-        else:
-            lines.append(f"Cobertura: {publishers[0] if publishers else story.publisher}.")
-    lines.append("Fin del resumen. La lista completa de fuentes está en la ficha del episodio.")
+            lines.append(f"{headline}.")
     return "\n".join(lines)
+
+
+# --- editorial stage ---------------------------------------------------------
+
+def _read_json_any(path: Path):
+    """Read a JSON value of any top-level type, or None if absent/invalid."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def editor_story_payload(selected: list[Story]) -> list[dict]:
+    """A stable numeric id plus title/snippet/publisher and optional bounded historical context."""
+    payload = []
+    for number, story in enumerate(selected, start=1):
+        item = {"id": number, "title": story.title, "snippet": story.snippet,
+                "publisher": story.publisher}
+        context = getattr(story, "context", None)
+        if context:
+            item["context"] = context
+        payload.append(item)
+    return payload
+
+
+def _editor_text_ok(text) -> bool:
+    """Strict, bounded Spanish narration: no tags, markup or tool/think artifacts."""
+    if not isinstance(text, str):
+        return False
+    text = text.strip()
+    if not text or len(text) > _MAX_NARRATION_CHARS or _NARRATION_TAG_RE.search(text):
+        return False
+    return _MIN_NARRATION_WORDS <= len(text.split()) <= _MAX_NARRATION_WORDS
+
+
+def validate_editor_segments(raw, expected_ids: list[int]) -> list[str]:
+    """Require exactly one clean segment per selected id; never accept partial model output."""
+    if not isinstance(raw, list):
+        raise PodcastError("editor output is not a JSON array of segments")
+    found: dict[int, str] = {}
+    for segment in raw:
+        if not isinstance(segment, dict):
+            raise PodcastError("editor segment is not an object")
+        sid = segment.get("id")
+        if isinstance(sid, bool) or not isinstance(sid, int):
+            raise PodcastError("editor segment has no integer id")
+        if sid in found:
+            raise PodcastError(f"editor returned duplicate id {sid}")
+        if not _editor_text_ok(segment.get("text")):
+            raise PodcastError(f"editor segment {sid} is empty, unbounded or has tags/markup")
+        found[sid] = segment["text"].strip()
+    expected = set(expected_ids)
+    unknown = sorted(set(found) - expected)
+    missing = sorted(expected - set(found))
+    if unknown:
+        raise PodcastError(f"editor returned unknown ids: {unknown[:5]}")
+    if missing:
+        raise PodcastError(f"editor returned no segment for ids: {missing[:5]}")
+    return [found[sid] for sid in expected_ids]
+
+
+def editor_enabled(settings: PodcastSettings) -> bool:
+    """Editorial mode is on for an explicit provider, or a configured local model."""
+    return settings.editor_provider in ("openai", "codex") or bool(settings.editor_model)
+
+
+def run_editor(selected: list[Story], staging: Path, settings: PodcastSettings) -> list[str]:
+    """Run the Spanish editor and return one narration text per selected story.
+
+    A configured editor that fails, times out or returns anything but strict complete JSON raises
+    PodcastError: generation stops and the previously published episode is kept. There is no silent
+    fallback to raw/English fragments. The API key (if any) is inherited from the environment and
+    never appears in argv, config or logs.
+    """
+    if not editor_enabled(settings):
+        raise PodcastError("no editor provider configured")
+    if not settings.editor_python:
+        raise PodcastError("NEWSNEST_PODCAST_EDITOR_PYTHON is not configured")
+    script = Path(settings.editor_script)
+    if not script.is_file():
+        raise PodcastError(f"editor script not found: {script}")
+    if settings.editor_provider == "local" and not Path(settings.editor_model).is_dir():
+        raise PodcastError("local editor model must be a local directory")
+    payload = editor_story_payload(selected)
+    source = staging / "editor-input.json"
+    result = staging / "editor-output.json"
+    _atomic_json(source, payload)
+    command = [settings.editor_python, str(script), "--model", settings.editor_model,
+               "--input", str(source), "--output", str(result),
+               "--provider", settings.editor_provider, "--api-model", settings.editor_api_model]
+    if settings.editor_provider == "codex":
+        command += ["--codex-binary", settings.editor_codex_binary]
+    env = {**os.environ, "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1"}
+    timeout = min(settings.editor_timeout_seconds, 180) if settings.editor_provider == "codex" \
+        else settings.editor_timeout_seconds
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True,
+                                   timeout=timeout, cwd=str(REPO_ROOT), env=env)
+    except subprocess.TimeoutExpired:
+        raise PodcastError(f"editor timed out after {timeout}s") from None
+    except OSError as e:
+        raise PodcastError(f"editor could not start: {e}") from e
+    if completed.returncode != 0:
+        # Cloud/subscription errors must not leak raw subprocess streams into status or UI.
+        detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+        if settings.editor_provider in ("openai", "codex"):
+            raise PodcastError(f"editor failed ({settings.editor_provider})")
+        raise PodcastError("editor failed" + (": " + detail[-1][:500] if detail else ""))
+    raw = _read_json_any(result)
+    return validate_editor_segments(raw, [item["id"] for item in payload])
+
+
+def build_editorial_transcript(segments: list[str]) -> str:
+    """Join cleaned segments in story order; the editor supplies the transitions, not the app."""
+    return "\n".join(segment.strip() for segment in segments if segment.strip())
 
 
 # --- storage ----------------------------------------------------------------
@@ -505,6 +688,9 @@ def _public_episode(raw: dict) -> dict | None:
         sources = [s for s in raw.get("sources", [])
                    if isinstance(s, dict) and all(isinstance(s.get(k), str) for k in ("title", "url", "publisher"))]
         version = _parse_version(raw.get("version"))
+        mode = raw.get("narration_mode")
+        if mode not in ("editorial", "extractive"):
+            mode = "extractive"  # backward fallback for legacy metadata
         audio_url = f"/reels/podcast/{day.isoformat()}/audio"
         if version is not None:
             audio_url = f"{audio_url}?v={version}"
@@ -518,6 +704,7 @@ def _public_episode(raw: dict) -> dict | None:
             "transcript": str(raw.get("transcript") or ""),
             "sources": sources,
             "generated_at": str(raw.get("generated_at") or ""),
+            "narration_mode": mode,
         }
         if version is not None:
             public["version"] = version
@@ -636,7 +823,11 @@ def run_tts(transcript: str, output: Path, settings: PodcastSettings) -> float:
                "--model", settings.model, "--voice", settings.voice, "--language", settings.language,
                "--ffmpeg", settings.ffmpeg, "--chunk-chars", str(settings.chunk_chars),
                "--temperature", str(settings.temperature), "--max-tokens", str(settings.max_tokens),
-               "--sidecar", str(sidecar)]
+               "--sidecar", str(sidecar), "--tempo", str(settings.tempo), "--seed", str(settings.seed)]
+    if settings.ref_audio and settings.ref_text_file:
+        command += ["--ref-audio", settings.ref_audio, "--ref-text-file", settings.ref_text_file]
+    if settings.pronunciations_file:
+        command += ["--pronunciations-file", settings.pronunciations_file]
     if settings.instruct:
         command += ["--instruct", settings.instruct]
     try:
@@ -655,14 +846,21 @@ def run_tts(transcript: str, output: Path, settings: PodcastSettings) -> float:
 # --- generation -------------------------------------------------------------
 
 def _episode_metadata(day: date, selected: list[Story], total_items: int, transcript: str,
-                      duration: float, settings: PodcastSettings, version) -> dict:
+                      duration: float, settings: PodcastSettings, version,
+                      narration_mode: str = "extractive",
+                      context_sources: list[dict] | None = None) -> dict:
     sources, seen = [], set()
     for story in selected:
         for source in story.sources:
-            key = (source["url"], source["publisher"])
+            key = (source["url"], source["publisher"], "story")
             if key not in seen:
                 seen.add(key)
                 sources.append(source)
+    for source in context_sources or []:
+        key = (source["url"], source["publisher"], "context")
+        if key not in seen:
+            seen.add(key)
+            sources.append(source)
     return {
         "day": day.isoformat(),
         "title": f"{settings.title} · {spanish_date(day)}",
@@ -674,6 +872,7 @@ def _episode_metadata(day: date, selected: list[Story], total_items: int, transc
         "transcript": transcript,
         "sources": sources,
         "generated_at": iso(utcnow()),
+        "narration_mode": narration_mode,
     }
 
 
@@ -683,19 +882,38 @@ def generate(day: date, cfg: Config, sources: list[Source], settings: PodcastSet
     stories, total = eligible_stories(conn, cfg, sources, day, settings)
     if not stories:
         raise PodcastError("no eligible stories published that day")
-    selected = select_stories(stories, settings.max_stories, settings.max_per_source)
-    transcript = build_transcript(day, selected, total, settings)
+    selected = group_for_narration(
+        select_stories(stories, settings.max_stories, settings.max_per_source))
+    context_sources: list[dict] = []
+    if editor_enabled(settings):
+        # Related past stories come only from the local DB (two per story, 14-day window).
+        for story in selected:
+            story.context = related_context(conn, story, day, tz=settings.tz)
+            for entry in story.context:
+                context_sources.append({"title": entry["title"], "url": entry["url"],
+                                        "publisher": entry["publisher"],
+                                        "published": entry["published"], "context": True})
     root = podcasts_root()
     staging = root / ".staging" / uuid.uuid4().hex
     staging.mkdir(parents=True, exist_ok=False)
     try:
+        if editor_enabled(settings):
+            # A configured editor is authoritative: any failure aborts generation, so a previous
+            # episode is kept and raw/external fragments are never read as a silent fallback.
+            segments = run_editor(selected, staging, settings)
+            transcript = build_editorial_transcript(segments)
+            narration_mode = "editorial"
+        else:
+            transcript = build_transcript(day, selected, total, settings)
+            narration_mode = "extractive"
         mp3 = staging / "episode.mp3"
         duration = run_tts(transcript, mp3, settings)
         # Immutable audio: a fresh UUID version per generation, so a failed manifest write below
         # cannot change the audio an already published episode serves, and no old version is
         # overwritten. The legacy episode.mp3 of the first real episode is never touched.
         version = uuid.uuid4()
-        metadata = _episode_metadata(day, selected, total, transcript, duration, settings, version)
+        metadata = _episode_metadata(day, selected, total, transcript, duration, settings, version,
+                                     narration_mode, context_sources)
         final_dir = episode_dir(day)
         final_dir.mkdir(parents=True, exist_ok=True)
         audio = final_dir / f"episode-{version}.mp3"

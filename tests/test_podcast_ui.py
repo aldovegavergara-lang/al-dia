@@ -123,6 +123,18 @@ def test_podcast_is_first_card_with_accessible_native_audio():
     assert "Leer transcripción y fuentes" in podcast
 
 
+def test_podcast_subtitle_reflects_narration_mode():
+    editorial = _podcast_html(_render(_podcast(narration_mode="editorial")))
+    extractive = _podcast_html(_render(_podcast(narration_mode="extractive")))
+    assert 'data-narration-mode="editorial"' in editorial
+    assert 'data-narration-mode="extractive"' in extractive
+    assert "voz local" in editorial and "voz local" in extractive
+    assert "Titulares y extractos" not in editorial
+    assert "Titulares y extractos" in extractive
+    # Legacy episodes without the field keep the extractive label.
+    assert "Titulares y extractos" in _podcast_html(_render(_podcast()))
+
+
 def test_podcast_never_carries_news_ids():
     podcast = _podcast_html(_render(_podcast()))
     assert "data-id" not in podcast

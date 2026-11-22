@@ -6,9 +6,18 @@ CustomVoice) and becomes the first reel on the unfiltered reader.
 
 ## What the episode contains
 
-The transcript is **extractive**. It reads the real headline and snippet stored for each
-story, names the outlet, and states how many outlets covered it. It does not summarize with
-an AI, invent facts, add opinions, or describe an article that is not in the database.
+When `NEWSNEST_PODCAST_EDITOR_MODEL` is configured, the narration is **editorial**: a local
+Spanish model rewrites the selected stories into a conversational podcast, translating English
+and using brief natural transitions. It starts with the main news and has no spoken
+introduction, story numbering, repeated Coverage/Publisher lines or outro, and never comments
+on the input data or on details it does not have. The model is local,
+offline and untrusted: incomplete, duplicated, unknown-ID, empty, overlong, tagged or
+number-inventing segments reject the whole generation. The narration is **not fact-checked** and
+may paraphrase or err; articles are treated as quoted, untrusted data, never instructions.
+
+Without an editor model the fallback is **extractive**: it reads the stored headline and snippet
+attributed once to the outlet, with no AI summary, opinions or invented facts. The episode metadata
+carries `narration_mode` (`editorial` or `extractive`); old metadata defaults to `extractive`.
 
 * Every story is selected by its **actual publication date** in `America/Santiago`, inside
   `[00:00, next 00:00)`. Discovery/fetch time is never used as a substitute.
@@ -17,13 +26,16 @@ an AI, invent facts, add opinions, or describe an article that is not in the dat
   outlets covering one event produce one story with two sources.
 * The digest is capped (`max_stories`, default 25). `0` means all eligible stories. Selection
   round-robins sections and then publishers to avoid a single topic or outlet flooding the
-  episode. If the cap (or a source cap) leaves stories out, the intro says “Se incluyen N de M
-  historias elegibles” and never claims the episode contains everything.
+  episode. Before narration the same selected stories are grouped into contiguous themes (frontier
+  tech, providers, world/news, other tech) while keeping score order inside each group: selection
+  counts and coverage do not change, but the audio stops alternating topics every story.
+  The cap and the full source list are **visual metadata only** (`item_count` is what
+  was narrated; `total_items` is how many eligible stories existed before the cap); the audio
+  never speaks selection counts or “Cobertura”.
 * `sources` in the episode metadata is the full auditable list of the included stories'
-  headlines, URLs and publishers. `item_count` is what was read; `total_items` is how many
-  eligible stories existed before the cap.
+  headlines, URLs and publishers.
 
-Missing snippets are announced (“sin fragmento disponible”); they are not filled in.
+Missing snippets are not announced and are not filled in with invented text.
 
 ## Schedule
 
@@ -78,7 +90,8 @@ overwritten. Metadata without a `version` is the legacy layout: the first real e
   "transcript": "…",
   "sources": [{"title": "…", "url": "https://…", "publisher": "…"}],
   "generated_at": "2026-11-22T06:04:12+00:00",
-  "version": "7d2f2a3c-1b0e-4a5f-9c8d-2e6b0a1c4d5e"
+  "version": "7d2f2a3c-1b0e-4a5f-9c8d-2e6b0a1c4d5e",
+  "narration_mode": "editorial"
 }
 ```
 
@@ -107,6 +120,17 @@ optional private file `data_dir()/podcast-config.json` (environment wins):
   "model": "/path/to/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit",
   "voice": "Vivian",
   "language": "Spanish",
+  "editor_python": "/path/to/editor-venv/bin/python",
+  "editor_model": "/path/to/local/Qwen3-editor",
+  "editor_script": "scripts/podcast-editor.py",
+  "editor_timeout_seconds": 900,
+  "editor_provider": "local",
+  "editor_api_model": "gpt-6-luna",
+  "ref_audio": "",
+  "ref_text_file": "",
+  "pronunciations_file": "",
+  "tempo": 1.0,
+  "seed": 0,
   "max_stories": 25,
   "max_per_source": 0,
   "retry_minutes": 5,
@@ -136,10 +160,26 @@ optional private file `data_dir()/podcast-config.json` (environment wins):
 | `NEWSNEST_PODCAST_RETRY_MINUTES` | `retry_minutes` | 5 | Retry interval after failure |
 | `NEWSNEST_PODCAST_TIMEOUT_SECONDS` | `timeout_seconds` | 900 | Hard TTS subprocess timeout |
 | `NEWSNEST_PODCAST_TITLE` | `title` | `Al día` | Episode title prefix |
+| `NEWSNEST_PODCAST_EDITOR_PYTHON` | `editor_python` | TTS python | Python with `mlx_lm` for the editor |
+| `NEWSNEST_PODCAST_EDITOR_MODEL` | `editor_model` | — | Local editorial model directory; empty = extractive fallback |
+| `NEWSNEST_PODCAST_EDITOR_SCRIPT` | `editor_script` | `scripts/podcast-editor.py` | Editorial runner |
+| `NEWSNEST_PODCAST_EDITOR_TIMEOUT_SECONDS` | `editor_timeout_seconds` | 900 | Hard editor subprocess timeout |
+| `NEWSNEST_PODCAST_EDITOR_PROVIDER` | `editor_provider` | `local` | `local` (MLX, offline), `openai` (Responses API) or `codex` (explicit) |
+| `NEWSNEST_PODCAST_EDITOR_API_MODEL` | `editor_api_model` | `gpt-6-luna` | Model used by the `openai`/`codex` providers |
+| `NEWSNEST_PODCAST_EDITOR_CODEX_BINARY` | `editor_codex_binary` | `codex` | Codex CLI executable (never automatic) |
+| `NEWSNEST_PODCAST_REF_AUDIO` | `ref_audio` | empty | Voice reference audio (only used with a text file) |
+| `NEWSNEST_PODCAST_REF_TEXT_FILE` | `ref_text_file` | empty | Voice reference transcript (only used with audio) |
+| `NEWSNEST_PODCAST_PRONUNCIATIONS_FILE` | `pronunciations_file` | empty | Flat JSON term → spoken replacement for TTS |
+| `NEWSNEST_PODCAST_TEMPO` | `tempo` | 1.0 | TTS tempo multiplier (0.5–2.0) |
+| `NEWSNEST_PODCAST_SEED` | `seed` | 0 | TTS sampling seed |
 
-No personal path is hardcoded. The coordinator/deployment supplies the TTS interpreter and
-model paths. Missing paths fail into `status.json` and are retried; they never break the web
-app or the feed scheduler.
+No personal path is hardcoded and no credential is ever read from the CLI or the config file. The
+`openai` provider reads `OPENAI_API_KEY` from the inherited environment only; the app never
+inspects or logs it, and availability of credits is not assumed. A configured editor that fails
+(bad path, timeout, malformed or incomplete JSON, API error/refusal) fails generation and keeps the
+previous episode; it never falls back to raw fragments. Missing paths fail into `status.json` and
+are retried; they never break the web app or the feed scheduler. The reference audio/text pair is
+only forwarded when both are set; the pronunciation map is forwarded when configured.
 
 ## Manual generation
 
@@ -161,10 +201,78 @@ paths are not exposed in the management UI. `public_status(now=None)` also adds 
 previous civil day's), `ready_at` (today's ready hour as an ISO UTC string) and `expected_day`
 (the previous civil day).
 
+## Editorial runner
+
+`scripts/podcast-editor.py` runs in the configured editor Python (the web environment does not
+need MLX or a key). It receives UTF-8 JSON with a stable numeric id, title, snippet and publisher
+per selected story, plus up to two bounded context items each; the context is retrieved only from
+the local database for the previous 14 days when a story shares at least two meaningful title
+components (named entities or non-generic keywords) after trailing publisher branding is removed.
+A single broad entity or a shared outlet suffix such as " - Daily Market" is never enough, so zero
+context is a normal, conservative result. Context URLs and dates are preserved in the episode's `sources` with
+`"context": true`; `item_count` still counts only the fresh selected stories.
+
+The **input root is a JSON array** and the **output is a JSON array** of `{"id", "text"}` covering
+exactly ids `1..N` once each — this single contract is shared by the app and the runner. A model
+that emits one `[{"segments": [...]}]` wrapper is tolerated on its raw completion only; anything
+else fails. Local runs load `mlx_lm` with the Hub offline and call
+`tokenizer.apply_chat_template(..., tokenize=False, add_generation_prompt=True,
+enable_thinking=False)`, then `generate(..., sampler=make_sampler(temp=...), verbose=False)`;
+the API branch calls `https://api.openai.com/v1/responses` with `store:false` and no temperature.
+The cloud provider rewrites up to five stories per call; the small local model is called **one
+story at a time** (the model is still loaded only once) because it drops ids when batching. Each
+story gets 1–3 natural Spanish sentences as warranted, with no word quota: direct openers, brief
+transitions, English summarized/translated, acronyms expanded, roles preserved, reported facts
+separated from cautious interpretation, and no hashes, configuration inventories, URLs or source
+boilerplate. The narration never talks about the input data or about details it lacks. Validation
+guards spoken filler such as “el titular no detalla el alcance”, “no se especifica cómo ocurrió”,
+“el contexto no precisa cómo funcionará” and the “la información citada/disponible no detalla …
+” variants: a whole sentence matching the input-metadata pattern is conservatively removed before
+validation, keeping every factual sentence in its original order and never rewriting facts or
+decimals. A sentence mixing fact and filler is dropped whole, so a story can still fail; genuine
+attributed uncertainty (“la fiscalía investiga si …”, “la empresa no informó …”) is kept. Tags,
+URLs and hashes are rejected on the original completion before cleanup, so cleanup never acts as a
+sanitizer that hides them. If nothing useful remains, the segment is rejected with a precise filler
+or word-count reason. The length bound is a universal floor of 8 words (and a 60-word cap) for
+every story, thin or rich: no story is padded with filler to reach a higher minimum. Numerals must
+be grounded in the same story, not another story in the batch. A rejected completion gets at most
+**one** concise corrective retry: each validation error names the failed id and rule (word count
+with actual/min/max, input-metadata filler, tags/URL/hash, or invented numeric values) so the single
+retry can repair the exact fault; no partial result is ever accepted. Parsing rejects duplicate JSON keys
+(a local model emitted five repeated `id`/`text` pairs, which plain `json.loads` silently
+collapsed). Local budget is 1400 tokens per story and the API budget is 4096 because reasoning
+consumes output tokens. Every segment must be bounded, clean and complete; otherwise the run fails.
+The result is atomically written to `--output` before TTS starts, so LLM and voice memory stay in
+separate processes. The narration is not fact-checked, and cloud credits/keys are not assumed to
+be configured.
+
+The `codex` provider is an **explicit** third choice (never an automatic paid fallback): one
+`codex exec` subprocess handles all selected stories in an isolated temporary cwd, with a strict
+`{"segments": [...]}` output schema, subscription auth (API-key variables are removed from the
+child environment), no shell/model tools, no web search and a 180-second cap. Its output goes
+through the same strict validator; a validation failure gets exactly **one** corrective retry with
+the same complete stories, the strict schema and the exact validation error, while an auth/quota
+error fails generation and keeps the previous episode. Raw subprocess streams are never written to
+status or the web UI. LaunchAgent installations can point `editor_codex_binary` at a small local
+wrapper that exports an isolated `CODEX_HOME` before starting the official CLI; that runtime and
+its login stay private and must already be valid. No bridge code is added to the public repository.
+
+The prompt may cautiously explain stable general technical concepts when they help the listener,
+but time-sensitive names, releases and concrete facts come only from the supplied articles and
+related items. Old dated context is narrated as an antecedent or previous event, never as a
+development of today and never with today's date. When comparing plan consumption units (tokens
+versus credits or requests), the prompt must not invent per-token prices, per-unit costs or billing
+the source does not state. A story with little beyond a headline is narrated in a short factual
+sentence, never padded with invented dates or filler, and the prompt never names the input fields.
+Historical context excludes hidden/muted items, generic capitalized openers, shared publisher
+suffixes and single broad entities, and its URLs and publication dates are preserved in the
+episode's metadata.
+
 ## TTS runner
 
 `scripts/podcast-tts.py` runs in the configured Python (the web environment does not need
-MLX). It:
+MLX). The caller forwards `--tempo` and `--seed` always, `--ref-audio`/`--ref-text-file` only
+when both are configured, and `--pronunciations-file` when a flat term → spoken map is set. It:
 
 1. splits the transcript into sentence-aware chunks (`--chunk-chars`);
 2. loads the Qwen3-TTS CustomVoice model and calls `generate_custom_voice(text=…, speaker=…,
@@ -185,7 +293,13 @@ the real model. It covers:
 * publication-date selection (not discovery time), read stories, hidden/muted exclusion and
   deduplication;
 * lead-only snippet attribution (a secondary outlet's extract is not borrowed under the lead);
-* caps, topic/source diversity and honest “N of M” wording;
+* caps and topic/source diversity as visual metadata, never spoken;
+* the editorial stage: clean segment validation, unique ids, a configured-editor failure that
+  stops generation, per-story numeral grounding, the `make_sampler` API, the mocked OpenAI
+  branch, TTS argv for the reference pair/pronunciations/tempo/seed, and `narration_mode`;
+* bounded historical context (14-day cutoff, two shared components after publisher-brand
+  stripping, brand-suffix and single-entity negatives, two-item cap, own URLs excluded) in
+  `tests/test_podcast_context.py`;
 * immutable versioned audio: a failed manifest write during same-day regeneration keeps the
   previous metadata and audio bytes, and the legacy `episode.mp3` of the first real episode
   resolves unchanged;

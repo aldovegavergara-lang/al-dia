@@ -7,6 +7,7 @@ import os
 import uuid
 from zoneinfo import ZoneInfo
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,9 +17,11 @@ from newsnest.config import Source
 from newsnest.db import connect, iso, migrate, utcnow
 from newsnest.grouping import new_story
 from newsnest.models import Item
-from newsnest.podcast import (PodcastError, PodcastSettings, audio_path, build_transcript, day_window,
-                              eligible_stories, episode_dir, generate, latest_episode, podcasts_root,
-                              public_status, read_status, select_stories, settings, target_day, tick)
+from newsnest.podcast import (PodcastError, PodcastSettings, audio_path, build_editorial_transcript,
+                              build_transcript, day_window, editor_story_payload, eligible_stories,
+                              episode_dir, generate, group_for_narration, latest_episode,
+                              podcasts_root, public_status, read_status, run_editor, run_tts,
+                              select_stories, settings, target_day, tick, validate_editor_segments)
 from newsnest.pipeline import ingest
 from newsnest.watches import Prefilter
 from tests.conftest import ROOT
@@ -185,7 +188,10 @@ def test_snippet_is_attributed_to_the_lead_only(conn, cfg, santiago_settings):
     story = stories[0]
     assert story.snippet == ""  # the lead has no extract: nothing is borrowed from the secondary
     transcript = build_transcript(date(2026, 9, 5), [story], 1, PodcastSettings())
-    assert "sin fragmento disponible" in transcript
+    # The extractive fallback reads only the lead's own headline; a missing snippet is not
+    # announced, and a secondary outlet's extract is never borrowed under the lead.
+    assert "Historia sin extracto" in transcript
+    assert "sin fragmento" not in transcript
     assert "Fragmento prestado." not in transcript
 
 
@@ -204,8 +210,11 @@ def test_selection_is_diverse_and_capped_honestly():
     per_source = select_stories(stories, 4, 1)
     assert {story.title for story in per_source} == {"W2", "A3"}
     transcript = build_transcript(date(2026, 9, 5), per_source, 5, PodcastSettings())
-    assert "2 de 5 historias elegibles" in transcript
-    assert "Cobertura:" in transcript
+    # The cap and source list are visual metadata now: never spoken, never repeated.
+    assert "A3" in transcript and "W2" in transcript
+    assert "historias elegibles" not in transcript
+    assert "Cobertura:" not in transcript
+    assert "Historia 1" not in transcript
 
 # --- generation, atomicity and retries -------------------------------------
 
@@ -220,7 +229,8 @@ def test_generate_publishes_atomically_and_is_idempotent(env, cfg, conn, podcast
     assert metadata["day"] == "2026-09-05"
     assert metadata["title"] == "Al día · sábado 5 de septiembre de 2026"
     assert metadata["item_count"] >= 1
-    assert metadata["transcript"].startswith("Al día. Resumen del sábado 5 de septiembre de 2026.")
+    assert metadata["transcript"].startswith("Titular sintético.")
+    assert metadata["narration_mode"] == "extractive"
     assert len(fake_tts) == 1
     assert audio_path(day, metadata["version"]).is_file()
     assert metadata["audio_url"] == f"/reels/podcast/2026-09-05/audio?v={metadata['version']}"
@@ -476,8 +486,319 @@ def test_tts_script_chunking_respects_limit_and_never_drops_text():
             + "Segunda parágrafo. " + "Medio " * 50)
     chunks = script.split_text(text, 120)
     assert chunks
-    assert all(len(chunk) <= 120 for chunk in chunks)
-    assert "".join(chunks) or True
+    # A whole sentence up to MAX_WHOLE_CHARS stays intact; only longer blocks fall back to the
+    # --chunk-chars word limit. No input word is dropped.
+    assert all(len(chunk) <= max(120, script.MAX_WHOLE_CHARS) for chunk in chunks)
+    assert " ".join(chunks).split() == text.split()
     assert script.split_text("", 120) == []
-    long_word = script.split_text("x" * 400, 120)
-    assert all(chunk for chunk in long_word)
+    long_word = script.split_text("x" * 900, 120)
+    assert all(chunk and len(chunk) <= 120 for chunk in long_word)
+    assert "".join(long_word) == "x" * 900
+
+
+# --- local editorial stage ----------------------------------------------------
+
+@pytest.fixture
+def fake_editor(monkeypatch):
+    """Replace the editor subprocess with a deterministic writer of clean segments."""
+    calls = []
+
+    def run(selected, staging, st):
+        calls.append({"selected": selected, "staging": staging, "settings": st})
+        payload = editor_story_payload(selected)
+        segments = [{"id": p["id"], "text": f"Noticia {p['id']}: {p['title']}."} for p in payload]
+        (staging / "editor-output.json").write_text(
+            json.dumps(segments, ensure_ascii=False), encoding="utf-8")
+        return [segment["text"] for segment in segments]
+
+    monkeypatch.setattr("newsnest.podcast.run_editor", run)
+    return calls
+
+
+def _synthetic_story(title):
+    return SimpleNamespace(title=title, snippet="Fragmento sintético.", publisher="Medios")
+
+
+def test_narration_groups_topics_without_changing_selection_counts():
+    def s(title, category, score):
+        return SimpleNamespace(title=title, category=category, score=score,
+                               published=datetime(2026, 9, 5, 23, 0, tzinfo=timezone.utc),
+                               snippet="", publisher="Medios", sources=[])
+    selected = [s("IA china", "ai", 1), s("Mundial", "world", 2), s("Harness", "tech", 3),
+                s("Proveedor cloud", "tech", 4), s("Otra IA", "ai", 5), s("Elecciones", "world", 6)]
+    grouped = group_for_narration(selected)
+    assert len(grouped) == len(selected)
+    assert {id(story) for story in grouped} == {id(story) for story in selected}
+    titles = [story.title for story in grouped]
+    assert titles[:3] == ["Otra IA", "Harness", "IA china"]  # frontier tech, score order
+    assert set(titles[3:]) == {"Proveedor cloud", "Mundial", "Elecciones"}
+    assert titles.index("Otra IA") < titles.index("Harness") < titles.index("Mundial")
+
+
+def test_extractive_transcript_has_no_spoken_intro_numbers_or_coverage():
+    selected = [_synthetic_story("Noticia uno"), _synthetic_story("Noticia dos")]
+    transcript = build_transcript(date(2026, 9, 5), selected, 12, PodcastSettings())
+    assert transcript == "Noticia uno. Medios: Fragmento sintético.\nNoticia dos. Medios: Fragmento sintético."
+    for forbidden in ("Al día. Resumen", "extractivo", "Se incluyen", "Historia 1",
+                      "Cobertura:", "sin fragmento", "Fin del resumen"):
+        assert forbidden not in transcript
+
+
+def test_editor_payload_has_only_the_four_allowed_fields():
+    story = SimpleNamespace(title="T", snippet="S", publisher="P", category="tech",
+                            sources=[{"url": "https://x", "publisher": "P", "title": "T"}])
+    assert editor_story_payload([story, story]) == [
+        {"id": 1, "title": "T", "snippet": "S", "publisher": "P"},
+        {"id": 2, "title": "T", "snippet": "S", "publisher": "P"},
+    ]
+
+
+def test_build_editorial_transcript_only_joins_clean_segments():
+    result = build_editorial_transcript([" Primera noticia. ", "", "Siguiente noticia. "])
+    assert result == "Primera noticia.\nSiguiente noticia."
+
+
+def test_validate_editor_segments_requires_each_id_exactly_once():
+    first = "Primera noticia con suficientes palabras para la narración."
+    second = "Segunda noticia con suficientes palabras para la narración."
+    good = [{"id": 2, "text": second}, {"id": 1, "text": first}]
+    assert validate_editor_segments(good, [1, 2]) == [first, second]
+
+
+@pytest.mark.parametrize("segments", [
+    [{"id": 1, "text": "Primera noticia."}, {"id": 1, "text": "Duplicada."}],  # duplicate
+    [{"id": 1, "text": "Primera noticia."}],                                   # missing 2
+    [{"id": 1, "text": "Primera noticia."}, {"id": 3, "text": "Otra."}],       # unknown 3
+    [{"id": 1, "text": "   "}, {"id": 2, "text": "Segunda noticia."}],         # empty
+    [{"id": 1, "text": "<think>x</think>"}, {"id": 2, "text": "Segunda noticia."}],  # tags
+    [{"id": 1, "text": "**negrita**"}, {"id": 2, "text": "Segunda noticia."}],  # markdown
+    [{"id": 1, "text": "x" * 3000}, {"id": 2, "text": "Segunda noticia."}],    # unbounded
+    {"id": 1, "text": "Primera noticia."},                                    # not an array
+    "not json",
+])
+def test_validate_editor_segments_rejects_incomplete_or_unsafe_output(segments):
+    with pytest.raises(PodcastError):
+        validate_editor_segments(segments, [1, 2])
+
+
+def test_run_editor_uses_local_offline_subprocess_and_sends_four_fields(monkeypatch, tmp_path):
+    model = tmp_path / "model"
+    model.mkdir()
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    st = PodcastSettings(editor_python="fake-editor-python", editor_model=str(model),
+                         editor_script=str(ROOT / "scripts" / "podcast-editor.py"))
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs.get("env")
+        source = Path(command[command.index("--input") + 1])
+        captured["payload"] = json.loads(source.read_text(encoding="utf-8"))
+        out = Path(command[command.index("--output") + 1])
+        out.write_text(json.dumps([{"id": p["id"], "text": "Segmento uno con palabras suficientes."}
+                                   for p in captured["payload"]]), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("newsnest.podcast.subprocess.run", fake_run)
+    texts = run_editor([_synthetic_story("Uno"), _synthetic_story("Dos")], stage, st)
+    assert len(texts) == 2
+    command = captured["command"]
+    assert command[0] == "fake-editor-python"
+    assert command[command.index("--model") + 1] == str(model)
+    assert captured["env"]["HF_HUB_OFFLINE"] == "1"
+    assert all(set(p) == {"id", "title", "snippet", "publisher"} for p in captured["payload"])
+    assert command[command.index("--provider") + 1] == "local"
+    assert command[command.index("--api-model") + 1] == "gpt-6-luna"
+
+
+def test_openai_editor_does_not_require_a_local_model(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        out = Path(command[command.index("--output") + 1])
+        out.write_text(json.dumps([{"id": 1, "text": "Noticia suficiente para la narración del episodio."}]),
+                       encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("newsnest.podcast.subprocess.run", fake_run)
+    st = PodcastSettings(editor_python="fake-editor-python",
+                         editor_script=str(ROOT / "scripts" / "podcast-editor.py"),
+                         editor_provider="openai", editor_api_model="gpt-6-luna")
+    assert run_editor([_synthetic_story("Uno")], tmp_path, st)
+    command = captured["command"]
+    assert command[command.index("--provider") + 1] == "openai"
+    assert command[command.index("--api-model") + 1] == "gpt-6-luna"
+
+
+def test_run_editor_failure_propagates(monkeypatch, tmp_path):
+    model = tmp_path / "model"
+    model.mkdir()
+    st = PodcastSettings(editor_python="fake-editor-python", editor_model=str(model),
+                         editor_script=str(ROOT / "scripts" / "podcast-editor.py"))
+    monkeypatch.setattr("newsnest.podcast.subprocess.run",
+                        lambda *_a, **_k: SimpleNamespace(returncode=2, stdout="", stderr="bad output"))
+    with pytest.raises(PodcastError, match="editor failed"):
+        run_editor([_synthetic_story("Uno")], tmp_path, st)
+
+
+def test_editorial_mode_publishes_segments_without_intro(env, cfg, conn, podcast_env, fake_tts,
+                                                          fake_editor, monkeypatch, tmp_path):
+    monkeypatch.setenv("NEWSNEST_PODCAST_EDITOR_MODEL", str(tmp_path))
+    day = date(2026, 9, 5)
+    sources = [Source(id="medios", type="rss", category="tech", name="Medios",
+                      url="https://medios.example/feed")]
+    add_story(conn, cfg, title="Noticia principal", snippet="", published=datetime(2026, 9, 5, 23, 0, tzinfo=timezone.utc))
+    add_story(conn, cfg, title="Segunda nota", snippet="", published=datetime(2026, 9, 5, 22, 0, tzinfo=timezone.utc))
+    metadata = generate(day, cfg, sources, settings(), conn)
+    assert metadata["narration_mode"] == "editorial"
+    assert metadata["transcript"] == "\n".join(
+        f"Noticia {n}: {title}." for n, title in enumerate(["Noticia principal", "Segunda nota"], start=1))
+    for forbidden in ("Resumen del", "Historia 1", "Cobertura:", "Fin del resumen"):
+        assert forbidden not in metadata["transcript"]
+    assert metadata["transcript"].startswith("Noticia 1:")
+    assert latest_episode()["narration_mode"] == "editorial"
+    assert len(fake_editor) == 1 and len(fake_tts) == 1
+
+
+def test_configured_editor_failure_keeps_previous_episode(env, cfg, conn, podcast_env, fake_tts,
+                                                          monkeypatch, tmp_path):
+    day = date(2026, 9, 5)
+    sources = [Source(id="medios", type="rss", category="tech", name="Medios",
+                      url="https://medios.example/feed")]
+    add_story(conn, cfg, published=datetime(2026, 9, 5, 23, 0, tzinfo=timezone.utc))
+    st = settings()
+    first = generate(day, cfg, sources, st, conn)
+    assert first["narration_mode"] == "extractive"
+    first_bytes = audio_path(day, first["version"]).read_bytes()
+
+    monkeypatch.setenv("NEWSNEST_PODCAST_EDITOR_MODEL", str(tmp_path))
+
+    def boom(*_args, **_kwargs):
+        raise PodcastError("editor failed")
+
+    monkeypatch.setattr("newsnest.podcast.run_editor", boom)
+    with pytest.raises(PodcastError, match="editor failed"):
+        generate(day, cfg, sources, settings(), conn)
+    assert latest_episode()["version"] == first["version"]
+    assert audio_path(day, first["version"]).read_bytes() == first_bytes
+    assert len(fake_tts) == 1  # no silent extractive fallback was synthesized
+    assert not list((podcasts_root() / ".staging").glob("*"))
+
+
+def _capture_tts_command(monkeypatch):
+    captured = {}
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        output = Path(command[command.index("--output") + 1])
+        output.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\x00" * 512)
+        sidecar = Path(command[command.index("--sidecar") + 1])
+        sidecar.write_text(json.dumps({"duration_seconds": 3.0}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("newsnest.podcast.subprocess.run", fake_run)
+    return captured
+
+
+def test_run_tts_forwards_tempo_seed_and_paired_reference(monkeypatch, tmp_path):
+    captured = _capture_tts_command(monkeypatch)
+    st = PodcastSettings(python="fake-python", model="/model", script=str(ROOT / "scripts" / "podcast-tts.py"),
+                         ref_audio="/voices/ref.wav", ref_text_file="/voices/ref.txt",
+                         pronunciations_file="/voices/pronunciaciones.json", tempo=1.25, seed=7)
+    assert run_tts("Narración de prueba.", tmp_path / "episode.mp3", st) == 3.0
+    command = captured["command"]
+    assert command[command.index("--tempo") + 1] == "1.25"
+    assert command[command.index("--seed") + 1] == "7"
+    assert command[command.index("--ref-audio") + 1] == "/voices/ref.wav"
+    assert command[command.index("--ref-text-file") + 1] == "/voices/ref.txt"
+    assert command[command.index("--pronunciations-file") + 1] == "/voices/pronunciaciones.json"
+
+
+def test_run_tts_skips_unpaired_reference(monkeypatch, tmp_path):
+    captured = _capture_tts_command(monkeypatch)
+    st = PodcastSettings(python="fake-python", model="/model", script=str(ROOT / "scripts" / "podcast-tts.py"),
+                         ref_audio="/voices/ref.wav")
+    run_tts("Narración de prueba.", tmp_path / "episode.mp3", st)
+    command = captured["command"]
+    assert "--ref-audio" not in command and "--ref-text-file" not in command
+    assert "--tempo" in command and "--seed" in command
+
+
+def test_codex_editor_argv_uses_explicit_binary(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        out = Path(command[command.index("--output") + 1])
+        out.write_text(json.dumps([{"id": 1, "text": "Noticia suficiente para el episodio."}]),
+                       encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("newsnest.podcast.subprocess.run", fake_run)
+    st = PodcastSettings(editor_python="fake-editor-python",
+                         editor_script=str(ROOT / "scripts" / "podcast-editor.py"),
+                         editor_provider="codex", editor_codex_binary="my-codex")
+    assert run_editor([_synthetic_story("Uno")], tmp_path, st)
+    command = captured["command"]
+    assert command[command.index("--provider") + 1] == "codex"
+    assert command[command.index("--codex-binary") + 1] == "my-codex"
+
+
+def test_editor_settings_read_from_environment(podcast_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("NEWSNEST_PODCAST_EDITOR_MODEL", str(tmp_path))
+    monkeypatch.setenv("NEWSNEST_PODCAST_EDITOR_PYTHON", "editor-python")
+    monkeypatch.setenv("NEWSNEST_PODCAST_REF_AUDIO", "/a.wav")
+    monkeypatch.setenv("NEWSNEST_PODCAST_REF_TEXT_FILE", "/a.txt")
+    monkeypatch.setenv("NEWSNEST_PODCAST_TEMPO", "1.5")
+    monkeypatch.setenv("NEWSNEST_PODCAST_SEED", "42")
+    monkeypatch.setenv("NEWSNEST_PODCAST_PRONUNCIATIONS_FILE", "/pronunciaciones.json")
+    monkeypatch.setenv("NEWSNEST_PODCAST_EDITOR_PROVIDER", "openai")
+    monkeypatch.setenv("NEWSNEST_PODCAST_EDITOR_API_MODEL", "gpt-6-luna")
+    st = settings()
+    assert st.editor_model == str(tmp_path)
+    assert st.editor_python == "editor-python"
+    assert (st.ref_audio, st.ref_text_file) == ("/a.wav", "/a.txt")
+    assert st.pronunciations_file == "/pronunciaciones.json"
+    assert st.tempo == 1.5 and st.seed == 42
+    assert st.editor_provider == "openai" and st.editor_api_model == "gpt-6-luna"
+    assert st.editor_script.endswith("podcast-editor.py")
+
+
+def test_public_episode_narration_mode_fallback_and_preservation(env):
+    day = date(2026, 9, 5)
+    legacy = episode_dir(day) / "episode.mp3"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\x00" * 512)
+    base = {"day": day.isoformat(), "duration_seconds": 12.5, "item_count": 1, "total_items": 1,
+            "audio_url": "/reels/podcast/2026-09-05/audio", "transcript": "synthetic", "sources": [],
+            "generated_at": "2026-09-05T06:04:12+00:00"}
+    manifest = podcasts_root() / "manifest.json"
+    manifest.write_text(json.dumps(base), encoding="utf-8")
+    assert latest_episode()["narration_mode"] == "extractive"
+    for invalid in ("editorial!", "", None):
+        manifest.write_text(json.dumps({**base, "narration_mode": invalid}), encoding="utf-8")
+        assert latest_episode()["narration_mode"] == "extractive"
+    version = str(uuid.uuid4())
+    (episode_dir(day) / f"episode-{version}.mp3").write_bytes(legacy.read_bytes())
+    manifest.write_text(json.dumps({**base, "version": version, "narration_mode": "editorial"}),
+                        encoding="utf-8")
+    assert latest_episode()["narration_mode"] == "editorial"
+
+
+def test_editorial_metadata_labels_context_sources_without_changing_item_count(
+        env, cfg, conn, podcast_env, fake_tts, fake_editor, monkeypatch, tmp_path):
+    day = date(2026, 9, 15)
+    sources = [Source(id="medios", type="rss", category="tech", name="Medios",
+                      url="https://medios.example/feed")]
+    add_story(conn, cfg, title="Mercado Libre invierte en logística",
+              published=datetime(2026, 9, 15, 3, 0, tzinfo=timezone.utc))
+    add_story(conn, cfg, title="Mercado Libre abre planta",
+              published=datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc))
+    monkeypatch.setenv("NEWSNEST_PODCAST_EDITOR_MODEL", str(tmp_path))
+    metadata = generate(day, cfg, sources, settings(), conn)
+    assert metadata["item_count"] == 1  # context does not change the fresh count
+    labeled = [s for s in metadata["sources"] if s.get("context")]
+    assert labeled and labeled[0]["title"] == "Mercado Libre abre planta"
+    assert latest_episode()["sources"][-1]["context"] is True

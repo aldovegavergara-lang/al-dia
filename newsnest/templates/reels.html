@@ -61,13 +61,14 @@
 {% set p_total = podcast.total_items|default(0)|int %}
 {% set p_transcript = podcast.transcript if podcast.transcript is defined and podcast.transcript else '' %}
 {% set p_sources = podcast.sources if podcast.sources is defined and podcast.sources else [] %}
+{% set p_mode = 'editorial' if podcast.narration_mode is defined and podcast.narration_mode == 'editorial' else 'extractive' %}
 <article class="reel podcast-reel" data-podcast-reel data-podcast-day="{{ p_day }}" aria-labelledby="podcast-title">
  <div class="podcast-visual" aria-hidden="true"></div>
  <div class="reel-topline podcast-topline"><span class="section-tag">PODCAST · RESUMEN DIARIO</span><span class="reel-position">AUDIO</span></div>
  <div class="podcast-content">
-  <p class="podcast-kicker">TITULARES Y EXTRACTOS</p>
+  <p class="podcast-kicker" data-narration-mode="{{ p_mode }}">{{ 'RESUMEN DEL DÍA' if p_mode == 'editorial' else 'TITULARES Y EXTRACTOS' }}</p>
   <h1 class="podcast-title" id="podcast-title">{{ p_heading }}</h1>
-  <p class="podcast-episode-title">Titulares y extractos · voz local</p>
+  <p class="podcast-episode-title" data-narration-mode="{{ p_mode }}">{{ 'Resumen narrado en español · voz local' if p_mode == 'editorial' else 'Titulares y extractos · voz local' }}</p>
   <p class="podcast-meta">
    <span>{% if p_duration %}{{ p_minutes }} min{% if p_seconds %} {{ p_seconds }} s{% endif %}{% else %}Duración no informada{% endif %}</span>
    <span>{{ p_items }} noticias de {{ p_total }} recopiladas</span>
@@ -106,6 +107,14 @@
  <div class="reel-topline"><span class="section-tag">{{ labels[0].name if labels else 'Sin clasificar' }} · {{ 'últimas ' ~ hours ~ ' h' if view == 'latest' else 'Pendiente' if view == 'pending' else 'Leída' if view == 'read' else 'Guardada' if saved else 'Biblioteca' }}</span><span class="reel-position">{{ loop.index }} / {{ cards|length }}</span></div>
  <div class="reel-content">
   <div class="publisher"><span class="publisher-badge">{{ initials(r.publisher or c.lead.source_name) }}</span><strong>{{ r.publisher or c.lead.source_name }}</strong>{% if r.published %}<time datetime="{{ r.published }}" data-relative-time data-time-label="Publicación" title="Tiempo desde la publicación indicada por la fuente">{{ publication_age(r.published) }}</time>{% else %}<span>Fecha de publicación no informada</span>{% endif %}</div>
+  <details class="story-details">
+   <summary>Detalles</summary>
+   <div class="story-details-content">
+    <div class="classification-info"><p class="details-heading">¿Por qué estos temas?</p><p>Sección de la fuente: {{ section_labels.get(r.category, r.category) }}. Coincidencias en el título, extracto o dirección de la noticia:</p>{% for t in labels %}<p><strong>{{ t.name }}</strong>: {{ t.matched|join(', ') }}</p>{% else %}<p>Ninguna regla activa coincide. Puedes crear o editar un tema.</p>{% endfor %}<a href="/reels/manage#auto-topics">Editar reglas</a></div>
+    <p class="library-origin">Recopilada <time datetime="{{ r.fetched_at }}" data-relative-time data-time-label="Recopilación" data-time-lower>{{ publication_age(r.fetched_at)|lower }}</time>{% if origins.get(c.lead.id) %} · {{ origins[c.lead.id]|map(attribute='name')|unique|join(', ') }}{% endif %}</p>
+    {% if c.others %}<div class="other-sources"><p>También en {{ c.others|length }} artículo{{ 's' if c.others|length != 1 }}</p>{% for m in c.others %}<a href="/go/{{ m.id }}" target="_blank" rel="noopener">{{ m.source_name }} · {{ m.row.title }}</a>{% endfor %}</div>{% endif %}
+   </div>
+  </details>
   <div class="story-copy">
    <h1>{{ r.title }}</h1>
    {% if labels %}<div class="auto-topics" aria-label="Temas detectados">{% for t in labels %}<a href="{{ reader_url(topic=t.id,after=0) }}" title="Coincide con: {{ t.matched|join(', ') }}">{{ t.name }}</a>{% endfor %}</div>{% endif %}
@@ -114,21 +123,20 @@
    {% elif r.snippet %}<p class="story-summary">{{ r.snippet|striptags }}</p><span class="excerpt-label">Extracto de la fuente</span>
    {% else %}<p class="story-summary">Esta fuente publicó el titular sin descripción. Puedes leer la noticia completa en su sitio.</p>{% endif %}
    {% if c.watches %}<div class="topic-tags">{% for w in c.watches %}<span>{{ w }}</span>{% endfor %}</div>{% endif %}
-   <details class="classification-info"><summary>¿Por qué estos temas?</summary><p>Sección de la fuente: {{ section_labels.get(r.category, r.category) }}. Coincidencias en el título, extracto o dirección de la noticia:</p>{% for t in labels %}<p><strong>{{ t.name }}</strong>: {{ t.matched|join(', ') }}</p>{% else %}<p>Ninguna regla activa coincide. Puedes crear o editar un tema.</p>{% endfor %}<a href="/reels/manage#auto-topics">Editar reglas</a></details>
-   <p class="library-origin">Recopilada <time datetime="{{ r.fetched_at }}" data-relative-time data-time-label="Recopilación" data-time-lower>{{ publication_age(r.fetched_at)|lower }}</time>{% if origins.get(c.lead.id) %} · {{ origins[c.lead.id]|map(attribute='name')|unique|join(', ') }}{% endif %}</p>
-   {% if c.others %}<details class="other-sources"><summary>También en {{ c.others|length }} artículo{{ 's' if c.others|length != 1 }}</summary>{% for m in c.others %}<a href="/go/{{ m.id }}" target="_blank" rel="noopener">{{ m.source_name }} · {{ m.row.title }}</a>{% endfor %}</details>{% endif %}
   </div>
-  {% set rating = card_rating(c) %}
-  <div class="story-feedback" role="group" aria-label="Ajustar tus intereses" data-rating="{{ rating }}">
-   <button data-reaction="1" data-item-id="{{ c.lead.id }}" aria-pressed="{{ 'true' if rating == 1 else 'false' }}" aria-label="Me interesa: priorizar noticias parecidas"><span aria-hidden="true">👍</span> Me interesa</button>
-   <button data-reaction="-1" data-item-id="{{ c.lead.id }}" aria-pressed="{{ 'true' if rating == -1 else 'false' }}" aria-label="No me interesa: bajar noticias parecidas"><span aria-hidden="true">👎</span> No me interesa</button>
-  </div>
-  <div class="story-footer"><a class="source-link" href="/go/{{ c.lead.id }}" target="_blank" rel="noopener">Leer en la fuente <span>↗</span></a><span class="reading-hint">{{ 'Guardados' if saved else 'Desliza para seguir' }}</span></div>
  </div>
- <div class="reel-actions">
-  <button data-save data-ids="{{ c.ids }}" aria-pressed="{{ 'true' if c.saved else 'false' }}" aria-label="Guardar noticia"><svg viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></svg><span>Guardar</span></button>
-  <button data-read data-read-value="{{ 0 if c.read else 1 }}" data-ids="{{ c.ids }}" aria-label="{{ 'Volver a pendientes' if c.read else 'Marcar como leída' }}"><svg viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></svg><span>{{ 'Pendiente' if c.read else 'Leída' }}</span></button>
-  <button data-share data-title="{{ r.title }}" data-url="{{ r.url }}" aria-label="Compartir noticia"><svg viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M5 13v7h14v-7"/></svg><span>Compartir</span></button>
+ {% set rating = card_rating(c) %}
+ <div class="story-rail" role="group" aria-label="Acciones de la noticia">
+  <div class="story-feedback" role="group" aria-label="Ajustar tus intereses" data-rating="{{ rating }}">
+   <button type="button" data-reaction="1" data-item-id="{{ c.lead.id }}" aria-pressed="{{ 'true' if rating == 1 else 'false' }}" aria-label="Me interesa: priorizar noticias parecidas"><span aria-hidden="true">👍</span><span>Interesa</span></button>
+   <button type="button" data-reaction="-1" data-item-id="{{ c.lead.id }}" aria-pressed="{{ 'true' if rating == -1 else 'false' }}" aria-label="No me interesa: bajar noticias parecidas"><span aria-hidden="true">👎</span><span>No interesa</span></button>
+  </div>
+  <div class="rail-actions">
+   <button type="button" data-save data-ids="{{ c.ids }}" aria-pressed="{{ 'true' if c.saved else 'false' }}" aria-label="Guardar noticia"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v17l-6-4-6 4z"/></svg><span>Guardar</span></button>
+   <button type="button" data-read data-read-value="{{ 0 if c.read else 1 }}" data-ids="{{ c.ids }}" aria-label="{{ 'Volver a pendientes' if c.read else 'Marcar como leída' }}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 5 5L20 6"/></svg><span>{{ 'Pendiente' if c.read else 'Leída' }}</span></button>
+   <button type="button" data-share data-title="{{ r.title }}" data-url="{{ r.url }}" aria-label="Compartir noticia"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M5 13v7h14v-7"/></svg><span>Compartir</span></button>
+   <a class="rail-source" href="/go/{{ c.lead.id }}" target="_blank" rel="noopener" aria-label="Leer la noticia en la fuente"><span aria-hidden="true">↗</span><span>Fuente</span></a>
+  </div>
  </div>
 </article>
 {% endfor %}
