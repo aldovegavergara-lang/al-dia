@@ -61,16 +61,123 @@
     clearTimeout(noticeTimer);
     noticeTimer = setTimeout(() => { el.hidden = true; }, 5000);
   }
-  async function post(url, data = {}) {
-    const response = await fetch(url, {method:'POST', headers:{Accept:'application/json'},
-      body: new URLSearchParams(data)});
-    if (response.status === 401) { location.assign('/login?next=' + encodeURIComponent(location.pathname + location.search)); throw new Error('Inicia sesión para continuar.'); }
-    if (!response.ok) {
-      let detail;
-      try { const error = await response.json(); if (typeof error.detail === 'string') detail = error.detail; } catch {}
-      throw new Error(detail || 'No se pudo guardar el cambio. Intenta de nuevo.');
+  async function request(url, options = {}) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(url, {...options, headers:{Accept:'application/json',...options.headers}, signal:controller.signal});
+      if (response.status === 401) { location.assign('/login?next=' + encodeURIComponent(location.pathname + location.search)); throw new Error('Inicia sesión para continuar.'); }
+      if (!response.ok) {
+        let detail;
+        try { const error = await response.json(); if (typeof error.detail === 'string') detail = error.detail; } catch {}
+        throw new Error(detail || 'No se pudo confirmar el cambio. Intenta de nuevo.');
+      }
+      return response;
+    } catch(e) {
+      if (e.name === 'AbortError' || e instanceof TypeError) throw new Error('No se pudo confirmar el cambio. Revisa tu conexión y vuelve a intentarlo.');
+      throw e;
+    } finally { clearTimeout(timeout); }
+  }
+  function post(url, data = {}) {
+    return request(url, {method:'POST', body:new URLSearchParams(data)});
+  }
+  function busy(button, label = 'Guardando…', disable = true) {
+    document.querySelector('#notice').hidden = true;
+    clearTimeout(noticeTimer);
+    const wasDisabled = button.disabled;
+    const oldLabel = button.getAttribute('aria-label');
+    const oldDisabled = button.getAttribute('aria-disabled');
+    const idle = document.createElement('span');
+    idle.className = 'button-idle-content';
+    idle.append(...button.childNodes);
+    const progress = document.createElement('span');
+    progress.className = 'button-busy-content';
+    progress.setAttribute('aria-hidden','true');
+    const text = document.createElement('span'); text.textContent = label; progress.append(text);
+    button.replaceChildren(idle, progress);
+    button.classList.add('is-busy'); button.dataset.busy = 'true';
+    button.setAttribute('aria-busy','true'); button.setAttribute('aria-label',label);
+    button.setAttribute('aria-disabled','true');
+    if (disable) button.disabled = true;
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      button.replaceChildren(...idle.childNodes);
+      button.classList.remove('is-busy'); delete button.dataset.busy;
+      button.removeAttribute('aria-busy');
+      if (oldLabel === null) button.removeAttribute('aria-label'); else button.setAttribute('aria-label',oldLabel);
+      if (oldDisabled === null) button.removeAttribute('aria-disabled'); else button.setAttribute('aria-disabled',oldDisabled);
+      if (disable) button.disabled = wasDisabled;
+    };
+  }
+  const navigation = document.querySelector('#page-loading');
+  let navigationTarget, navigationTimer;
+  const submittedForms = [];
+  function startNavigation(label, target) {
+    if (!navigation) return;
+    document.querySelector('#notice').hidden = true;
+    clearTimeout(noticeTimer);
+    if (navigationTarget) { navigationTarget.classList.remove('is-navigation-target'); navigationTarget.removeAttribute('aria-busy'); }
+    navigationTarget = target;
+    if (target) { target.classList.add('is-navigation-target'); target.setAttribute('aria-busy','true'); }
+    navigation.querySelector('[data-navigation-label]').textContent = label;
+    navigation.hidden = false; document.body.classList.add('is-navigating');
+    clearTimeout(navigationTimer);
+    navigationTimer = setTimeout(() => { navigation.querySelector('[data-navigation-label]').textContent = 'La sección está tardando en cargar…'; }, 15000);
+  }
+  document.addEventListener('click', event => {
+    const link = event.target.closest('a[href]');
+    if (!link || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey
+        || link.hasAttribute('download') || (link.target && link.target !== '_self')) return;
+    const target = new URL(link.href, location.href);
+    if (target.origin !== location.origin || (target.hash && target.pathname === location.pathname && target.search === location.search)) return;
+    startNavigation('Cargando sección…',link);
+  });
+  document.addEventListener('submit', event => {
+    if (event.defaultPrevented || event.target.method === 'dialog') return;
+    const form = event.target;
+    if (form.dataset.submitting) { event.preventDefault(); return; }
+    form.dataset.submitting = 'true';
+    const label = form.method.toLowerCase() === 'get' ? 'Cargando…' : 'Guardando…';
+    // Keep the native submitter enabled: disabling it would omit name=action/value from the request.
+    const finish = event.submitter instanceof HTMLButtonElement ? busy(event.submitter,label,false) : () => {};
+    submittedForms.push(() => { finish(); delete form.dataset.submitting; });
+    startNavigation(label,null);
+  });
+  window.addEventListener('pageshow', () => {
+    if (navigation) navigation.hidden = true;
+    document.body.classList.remove('is-navigating'); clearTimeout(navigationTimer);
+    if (navigationTarget) { navigationTarget.classList.remove('is-navigation-target'); navigationTarget.removeAttribute('aria-busy'); navigationTarget = null; }
+    submittedForms.splice(0).forEach(finish => finish());
+  });
+  let countTimer, countVersion = 0;
+  function refreshPendingCount(delta) {
+    document.querySelectorAll('[data-pending-count]').forEach(el => { el.textContent = Math.max(0,Number(el.textContent) + delta); });
+    const version = ++countVersion;
+    clearTimeout(countTimer);
+    countTimer = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams(location.search);
+        params.set('view','pending'); params.set('limit','1'); params.delete('after');
+        const library = await (await request('/reels/library?' + params.toString())).json();
+        if (version === countVersion) document.querySelectorAll('[data-pending-count]').forEach(el => { el.textContent = library.counts.pending; });
+      } catch { /* The read was persisted; a background badge refresh never blocks reading. */ }
+    }, 300);
+  }
+  async function waitForRefresh() {
+    const deadline = Date.now() + 120000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve,1500));
+      const params = new URLSearchParams({since:feed?.dataset.version || '0',hours:feed?.dataset.hours || '24',view:feed?.dataset.view || 'pending'});
+      const state = await (await request('/reels/state?' + params.toString())).json();
+      if (state.new_articles > 0) {
+        const newest = document.querySelector('[data-new-stories]');
+        if (newest) { newest.textContent = 'Hay noticias nuevas · Actualizar'; newest.hidden = false; }
+      }
+      if (!state.running) { notify(state.new_articles > 0 ? 'Consulta finalizada. Hay noticias nuevas para cargar.' : 'Consulta finalizada. No hay noticias nuevas.'); return; }
     }
-    return response;
+    notify('La consulta sigue en segundo plano. Las novedades aparecerán cuando termine.');
   }
   function step(delta) {
     const next = cards[Math.max(0, Math.min(cards.length - 1, current + delta))];
@@ -93,7 +200,7 @@
       }
     });
     const newest = document.querySelector('[data-new-stories]');
-    newest.addEventListener('click', () => location.reload());
+    newest.addEventListener('click', () => { startNavigation('Cargando noticias…',null); location.reload(); });
     async function check() {
       if (document.hidden) return;
       try {
@@ -108,79 +215,81 @@
   }
   document.addEventListener('click', async event => {
     const button = event.target.closest('button');
-    if (!button) return;
+    if (!button || button.disabled || button.dataset.busy) return;
     if (button.dataset.confirm && !confirm(button.dataset.confirm)) { event.preventDefault(); return; }
     if ('step' in button.dataset) { step(Number(button.dataset.step)); return; }
     if ('saveView' in button.dataset) {
       const form = document.querySelector('#reader-filters');
       const input = form.querySelector('[name=name]');
       if (!input.value.trim()) { input.setCustomValidity('Escribe un nombre para la vista.'); input.reportValidity(); input.addEventListener('input', () => input.setCustomValidity(''), {once:true}); return; }
-      button.disabled = true;
+      const finish = busy(button);
       try {
         const response = await post('/reels/views', Object.fromEntries(new FormData(form)));
-        location.assign((await response.json()).url);
-      } catch(e) { notify(e.message); button.disabled = false; }
+        const view = await response.json();
+        finish(); startNavigation('Abriendo vista…',null);
+        location.assign(view.url);
+      } catch(e) { finish(); notify(e.message); }
       return;
     }
     if ('reaction' in button.dataset) {
       const group = button.closest('.story-feedback');
       const buttons = [...group.querySelectorAll('[data-reaction]')];
-      const value = group.dataset.rating === button.dataset.reaction ? '0' : button.dataset.reaction;
+      const previous = group.dataset.rating;
+      const value = previous === button.dataset.reaction ? '0' : button.dataset.reaction;
+      const apply = rating => { group.dataset.rating = String(rating); buttons.forEach(el => el.setAttribute('aria-pressed',String(el.dataset.reaction === String(rating)))); };
+      apply(value);
+      const finish = busy(button);
       buttons.forEach(el => { el.disabled = true; });
       try {
         const response = await post('/reels/reaction/' + button.dataset.itemId, {value});
         const result = await response.json();
-        group.dataset.rating = String(result.rating);
-        buttons.forEach(el => el.setAttribute('aria-pressed', String(Number(el.dataset.reaction) === result.rating)));
+        apply(result.rating);
         notify(result.rating === 0 ? 'Reacción quitada.' : result.rating === 1
           ? 'Me interesa guardado. Se priorizarán noticias parecidas al abrir Actualidad.'
           : 'No me interesa guardado. Las noticias parecidas bajarán al abrir Actualidad.');
-      } catch(e) { notify(e.message); }
-      finally { buttons.forEach(el => { el.disabled = false; }); }
+      } catch(e) { apply(previous); notify(e.message); }
+      finally { finish(); buttons.forEach(el => { el.disabled = false; }); }
       return;
     }
     if ('save' in button.dataset) {
-      button.disabled = true;
+      const previous = button.getAttribute('aria-pressed');
+      const value = previous !== 'true';
+      const finish = busy(button);
+      button.setAttribute('aria-pressed',String(value));
       try {
-        const value = button.getAttribute('aria-pressed') !== 'true';
         await post('/api/saved', {ids:button.dataset.ids,value:value ? '1' : '0'});
-        button.setAttribute('aria-pressed', String(value));
+        finish();
         button.setAttribute('aria-label', value ? 'Quitar de guardados' : 'Guardar noticia');
         notify(value ? 'Noticia guardada para después.' : 'Noticia retirada de guardados.');
-      } catch (e) { notify(e.message); } finally { button.disabled = false; }
+      } catch (e) { button.setAttribute('aria-pressed',previous); notify(e.message); } finally { finish(); }
     }
     if ('read' in button.dataset) {
-      button.disabled = true;
+      const finish = busy(button);
       try {
         const value = button.dataset.readValue || '1';
         await post('/api/read', {ids:button.dataset.ids,value});
+        finish();
         button.dataset.readValue = value === '1' ? '0' : '1';
         button.setAttribute('aria-label',value === '1' ? 'Volver a pendientes' : 'Marcar como leída');
         button.querySelector('span').textContent = value === '1' ? 'Pendiente' : 'Leída';
         notify(value === '1' ? 'Marcada como leída.' : 'Devuelta a pendientes.');
-        try {
-          const params = new URLSearchParams(location.search);
-          params.set('view','pending'); params.set('limit','1'); params.delete('after');
-          const countResponse = await fetch('/reels/library?' + params.toString());
-          if (countResponse.ok) {
-            const library = await countResponse.json();
-            document.querySelectorAll('[data-pending-count]').forEach(el => { el.textContent = library.counts.pending; });
-          }
-        } catch { /* The persisted reading action succeeded even if the count cannot be refreshed. */ }
-        step(1);
-      } catch(e) { notify(e.message); } finally { button.disabled = false; }
+        refreshPendingCount(value === '1' ? -1 : 1);
+        if (button.closest('.reel') === cards[current]) step(1);
+      } catch(e) { notify(e.message); } finally { finish(); }
     }
     if ('share' in button.dataset) {
+      const finish = busy(button,'Abriendo…');
       try {
         if (navigator.share) await navigator.share({title:button.dataset.title,url:button.dataset.url});
         else { await navigator.clipboard.writeText(button.dataset.url); notify('Enlace copiado.'); }
-      } catch(e) { if (e.name !== 'AbortError') notify('No se pudo compartir el enlace.'); }
+      } catch(e) { if (e.name !== 'AbortError') notify('No se pudo compartir el enlace.'); } finally { finish(); }
     }
     if ('refresh' in button.dataset) {
-      button.disabled = true;
-      try { await post('/reels/refresh'); notify('Consultando fuentes. Las novedades aparecerán cuando termine la consulta.'); }
+      const refreshButtons = [...document.querySelectorAll('[data-refresh]')];
+      const finish = refreshButtons.map(el => busy(el,'Consultando…'));
+      try { await post('/reels/refresh'); notify('Consultando fuentes. Puedes seguir leyendo mientras tanto.'); await waitForRefresh(); }
       catch(e) { notify(e.message); }
-      finally { button.disabled = false; }
+      finally { finish.forEach(done => done()); }
     }
   });
   const kind = document.querySelector('#source-kind');

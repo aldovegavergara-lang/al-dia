@@ -72,6 +72,8 @@ def matches_card(card, labels, filters, *, source_names=(), now=None):
         published = [parse_iso(m.row['published']) for m in [card.lead,*card.others] if m.row['published']]
         if not any(now-timedelta(hours=filters.period) <= p <= now+timedelta(minutes=5) for p in published):
             return False
+    if not filters.exclude and not filters.query:
+        return True
     text = content_text(card) + ' ' + fold(' '.join(source_names))
     if any(fold(term) in text for term in phrases(filters.exclude)):
         return False

@@ -4,6 +4,9 @@ Esta copia de NewsNest añade un lector de noticias con tarjetas verticales tipo
 y una pantalla en español para mantener fuentes y búsquedas en `/reels/manage`.
 El menú superior empieza oculto para dar más espacio a las noticias. El botón **Menú**
 lo muestra; se cierra con **Cerrar**, Escape, al tocar fuera o al deslizar a otra noticia.
+Al cambiar de sección aparece una barra de progreso y un aviso de carga. Los botones
+muestran «Guardando…» mientras esperan la respuesta; las reacciones y los guardados
+responden visualmente al toque y recuperan su estado anterior si no se confirma el cambio.
 Cada noticia tiene **Me interesa** y **No me interesa**. Se conserva una reacción por
 noticia, compartida entre sus versiones y reversible al tocar el mismo botón. Las
 reacciones ajustan el orden de **Actualidad** cuando se vuelve a abrir, con coincidencias

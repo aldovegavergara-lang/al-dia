@@ -83,7 +83,7 @@ class TopicClassifier:
             if not r['enabled']:
                 continue
             def compile_terms(raw):
-                return [(p, re.compile(r'(?<!\w)' + re.escape(fold(p)) + r'(?!\w)')) for p in phrases(raw)]
+                return [(p, fold(p), re.compile(r'(?<!\w)' + re.escape(fold(p)) + r'(?!\w)')) for p in phrases(raw)]
             self.rules.append((r, compile_terms(r['include']), compile_terms(r['exclude'])))
 
     def classify(self, card):
@@ -94,7 +94,9 @@ class TopicClassifier:
         text += ' ' + fold(' '.join(unquote((u.hostname or '') + u.path) for u in urls))
         result = []
         for rule, includes, excludes in self.rules:
-            matched = [p for p, pattern in includes if pattern.search(text)]
-            if matched and not any(pattern.search(text) for _, pattern in excludes):
+            # Most terms are absent. The literal check avoids scanning the whole article with
+            # a lookbehind regex for each absent term, while preserving exact word boundaries.
+            matched = [p for p, needle, pattern in includes if needle in text and pattern.search(text)]
+            if matched and not any(needle in text and pattern.search(text) for _, needle, pattern in excludes):
                 result.append({'id':rule['id'], 'name':rule['name'], 'matched':matched})
         return result
