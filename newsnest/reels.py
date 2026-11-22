@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
-from datetime import timedelta
+from datetime import timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import Depends, Form, HTTPException, Request
@@ -57,6 +57,34 @@ def published_recently(card, hours: int, now=None) -> bool:
     now = now or utcnow()
     published = parse_iso(card.lead.row['published'])
     return bool(published and now - timedelta(hours=hours) <= published <= now + timedelta(minutes=5))
+
+
+def publication_age(value, now=None):
+    """Elapsed time, never discovery time or a fabricated age for future publications."""
+    try:
+        stamp = parse_iso(value)
+    except (ValueError, TypeError):
+        stamp = None
+    if not stamp:
+        return 'Fecha no informada'
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    seconds = int(((now or utcnow()) - stamp).total_seconds())
+    if seconds < -300:
+        return 'Fecha por confirmar'
+    if seconds < 60:
+        return 'Hace un momento'
+    minutes = seconds // 60
+    if minutes < 60:
+        return f'Hace {minutes} minuto' + ('s' if minutes != 1 else '')
+    hours = minutes // 60
+    if hours < 24:
+        return f'Hace {hours} hora' + ('s' if hours != 1 else '')
+    days, hours = divmod(hours, 24)
+    text = f'Hace {days} día' + ('s' if days != 1 else '')
+    if hours:
+        text += f' y {hours} hora' + ('s' if hours != 1 else '')
+    return text
 
 
 def register(app, ui):
@@ -111,7 +139,8 @@ def register(app, ui):
                              view=view, query=q, order=order, counts=library.counts,
                              library_sources=library.source_options, origins=library.origins,
                              next_after=next_after, total=total, reader_url=reader_url,
-                             card_rating=card_rating, article_filters=filters,topic_rules=rules,
+                             card_rating=card_rating, publication_age=publication_age,
+                             article_filters=filters,topic_rules=rules,
                              card_topics=library.topics,saved_views=saved_views(conn),view_url=view_url,
                              has_filters=bool(filters.active or f!='all' or source))
         if token:

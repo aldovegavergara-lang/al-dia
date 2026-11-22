@@ -6,6 +6,33 @@
   let current = 0;
   let noticeTimer;
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const relativeTimes = [...document.querySelectorAll('time[data-relative-time]')];
+  function elapsedTime(stamp) {
+    const time = Date.parse(stamp);
+    if (!Number.isFinite(time)) return 'Fecha no informada';
+    const seconds = Math.floor((Date.now() - time) / 1000);
+    if (seconds < -300) return 'Fecha por confirmar';
+    if (seconds < 60) return 'Hace un momento';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `Hace ${minutes} minuto${minutes === 1 ? '' : 's'}`;
+    const totalHours = Math.floor(minutes / 60);
+    if (totalHours < 24) return `Hace ${totalHours} hora${totalHours === 1 ? '' : 's'}`;
+    const days = Math.floor(totalHours / 24), hours = totalHours % 24;
+    return `Hace ${days} día${days === 1 ? '' : 's'}`
+      + (hours ? ` y ${hours} hora${hours === 1 ? '' : 's'}` : '');
+  }
+  function updateRelativeTimes() {
+    for (const el of relativeTimes) {
+      const text = elapsedTime(el.dateTime);
+      el.textContent = el.hasAttribute('data-time-lower') ? text.toLowerCase() : text;
+      el.setAttribute('aria-label', el.dataset.timeLabel + ': ' + text.toLowerCase());
+    }
+  }
+  if (relativeTimes.length) {
+    updateRelativeTimes();
+    setInterval(() => { if (!document.hidden) updateRelativeTimes(); }, 60000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) updateRelativeTimes(); });
+  }
   const menuToggle = document.querySelector('[data-reader-menu]');
   const menu = document.querySelector('#reader-menu');
   if (menuToggle && menu) {

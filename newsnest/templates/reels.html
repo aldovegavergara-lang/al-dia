@@ -54,7 +54,7 @@
  {% set labels = card_topics.get(c.lead.id, []) %}
  <div class="reel-topline"><span class="section-tag">{{ labels[0].name if labels else 'Sin clasificar' }} · {{ 'últimas ' ~ hours ~ ' h' if view == 'latest' else 'Pendiente' if view == 'pending' else 'Leída' if view == 'read' else 'Guardada' if saved else 'Biblioteca' }}</span><span class="reel-position">{{ loop.index }} / {{ cards|length }}</span></div>
  <div class="reel-content">
-  <div class="publisher"><span class="publisher-badge">{{ initials(r.publisher or c.lead.source_name) }}</span><strong>{{ r.publisher or c.lead.source_name }}</strong>{% if r.published %}<time datetime="{{ r.published }}" title="Fecha de publicación indicada por la fuente">Publicado {{ localtime(r.published, '%d/%m · %H:%M') }}</time>{% else %}<span>Fecha de publicación no informada</span>{% endif %}</div>
+  <div class="publisher"><span class="publisher-badge">{{ initials(r.publisher or c.lead.source_name) }}</span><strong>{{ r.publisher or c.lead.source_name }}</strong>{% if r.published %}<time datetime="{{ r.published }}" data-relative-time data-time-label="Publicación" title="Tiempo desde la publicación indicada por la fuente">{{ publication_age(r.published) }}</time>{% else %}<span>Fecha de publicación no informada</span>{% endif %}</div>
   <div class="story-copy">
    <h1>{{ r.title }}</h1>
    {% if labels %}<div class="auto-topics" aria-label="Temas detectados">{% for t in labels %}<a href="{{ reader_url(topic=t.id,after=0) }}" title="Coincide con: {{ t.matched|join(', ') }}">{{ t.name }}</a>{% endfor %}</div>{% endif %}
@@ -64,7 +64,7 @@
    {% else %}<p class="story-summary">Esta fuente publicó el titular sin descripción. Puedes leer la noticia completa en su sitio.</p>{% endif %}
    {% if c.watches %}<div class="topic-tags">{% for w in c.watches %}<span>{{ w }}</span>{% endfor %}</div>{% endif %}
    <details class="classification-info"><summary>¿Por qué estos temas?</summary><p>Sección de la fuente: {{ section_labels.get(r.category, r.category) }}. Coincidencias en el título, extracto o dirección de la noticia:</p>{% for t in labels %}<p><strong>{{ t.name }}</strong>: {{ t.matched|join(', ') }}</p>{% else %}<p>Ninguna regla activa coincide. Puedes crear o editar un tema.</p>{% endfor %}<a href="/reels/manage#auto-topics">Editar reglas</a></details>
-   <p class="library-origin">Recopilada {{ localtime(r.fetched_at, '%d/%m · %H:%M') }}{% if origins.get(c.lead.id) %} · {{ origins[c.lead.id]|map(attribute='name')|unique|join(', ') }}{% endif %}</p>
+   <p class="library-origin">Recopilada <time datetime="{{ r.fetched_at }}" data-relative-time data-time-label="Recopilación" data-time-lower>{{ publication_age(r.fetched_at)|lower }}</time>{% if origins.get(c.lead.id) %} · {{ origins[c.lead.id]|map(attribute='name')|unique|join(', ') }}{% endif %}</p>
    {% if c.others %}<details class="other-sources"><summary>También en {{ c.others|length }} artículo{{ 's' if c.others|length != 1 }}</summary>{% for m in c.others %}<a href="/go/{{ m.id }}" target="_blank" rel="noopener">{{ m.source_name }} · {{ m.row.title }}</a>{% endfor %}</details>{% endif %}
   </div>
   {% set rating = card_rating(c) %}
